@@ -1,0 +1,722 @@
+# Session 19: Controllers and JSON APIs
+
+```elixir
+Mix.install([])
+```
+
+## Introduction
+
+In Session 18, you learned how requests flow through Phoenix: Endpoint → Router → Pipeline → Controller.
+
+Now it's time to focus on the **Controller** - where your application logic meets HTTP.
+Controllers are the bridge between the HTTP world and your OTP agents.
+
+### Sources for This Session
+
+This session synthesizes concepts from:
+
+* [Phoenix - Controllers](https://hexdocs.pm/phoenix/controllers.html)
+* [Phoenix - JSON and APIs](https://hexdocs.pm/phoenix/json_and_apis.html)
+* [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/)
+
+## Learning Goals
+
+By the end of this session, you'll be able to:
+
+* Implement controller actions
+* Handle JSON request/response
+* Build the Agent Card endpoint
+* Handle errors gracefully
+* Understand the conn lifecycle in controllers
+
+---
+
+## Section 1: Controller Fundamentals
+
+### 🤔 Opening Reflection
+
+```elixir
+# Think about the similarity between GenServer callbacks and controller actions:
+
+comparison = %{
+  genserver: """
+    def handle_call(:get_state, _from, state) do
+      {:reply, state, state}
+    end
+  """,
+
+  controller: """
+    def show(conn, _params) do
+      # What goes here?
+      # What's returned?
+    end
+  """
+}
+
+# Question: What's similar? What's different?
+
+similarities_differences = """
+Similar:
+- ???
+
+Different:
+- ???
+"""
+
+# Answer:
+similarities_differences = """
+Similar:
+- Both receive a "context" (state vs conn) and parameters
+- Both pattern match on the input
+- Both produce a response
+- Both are functions that follow conventions
+
+Different:
+- GenServer returns a tuple ({:reply, ...})
+- Controller returns the modified conn
+- GenServer manages ongoing state
+- Controller is typically stateless (conn is temporary)
+- GenServer state persists across calls
+- Controller conn exists only for this request
+"""
+```
+
+### Controller Actions
+
+Controller actions are functions that:
+1. Receive `conn` (the connection) and `params` (parsed request data)
+2. Process the request
+3. Return a response via the modified `conn`
+
+```elixir
+defmodule AgentApiWeb.AgentCardController do
+  use AgentApiWeb, :controller
+
+  # Action: show
+  # Called for: GET /.well-known/agent.json
+  def show(conn, _params) do
+    card = %{
+      name: "Elixir Agent Framework",
+      version: "0.1.0"
+    }
+
+    # json/2 sends JSON response
+    json(conn, card)
+  end
+end
+```
+
+### 🤔 The `conn` Struct
+
+```elixir
+# The conn (Plug.Conn) carries all request/response data:
+
+conn_structure = %{
+  # Request data (read-only after parsing)
+  method: "GET",
+  request_path: "/.well-known/agent.json",
+  host: "localhost",
+  port: 4000,
+  query_params: %{},       # From query string
+  body_params: %{},        # From request body
+  path_params: %{},        # From URL pattern (e.g., :id)
+  params: %{},             # All params merged
+
+  # Response data (we set these)
+  status: nil,             # 200, 404, etc.
+  resp_body: nil,          # Response content
+  resp_headers: [],        # Response headers
+
+  # Metadata
+  assigns: %{},            # Your custom data
+  halted: false            # Request processing stopped?
+}
+
+# Question: Why is conn passed through instead of returned in a tuple?
+
+conn_passing = """
+Your answer: ???
+"""
+
+# Answer:
+# The plug pipeline is like a chain of transformations.
+# Each plug receives conn, transforms it, returns conn.
+# This makes composition natural:
+#
+#   conn
+#   |> plug1()
+#   |> plug2()
+#   |> plug3()
+#
+# Unlike GenServer where state persists, conn exists only
+# for this request. We don't need {:reply, response, new_conn}
+# because conn IS the response being built.
+```
+
+---
+
+## Section 2: Rendering JSON
+
+### The json/2 Function
+
+```elixir
+# json/2 is the primary way to send JSON responses:
+
+def show(conn, _params) do
+  data = %{name: "Agent", status: "active"}
+  json(conn, data)
+end
+
+# What json/2 does:
+# 1. Sets Content-Type to application/json
+# 2. Encodes data as JSON (using Jason)
+# 3. Sets the response body
+# 4. Returns the modified conn
+
+# Under the hood, it's roughly:
+def json(conn, data) do
+  conn
+  |> put_resp_content_type("application/json")
+  |> send_resp(200, Jason.encode!(data))
+end
+```
+
+### 🤔 Response Functions
+
+```elixir
+# Phoenix provides several response functions:
+
+response_functions = %{
+  "json(conn, data)" => "Send JSON with 200",
+  "text(conn, string)" => "Send plain text with 200",
+  "html(conn, string)" => "Send HTML with 200",
+  "send_resp(conn, status, body)" => "Send any response",
+  "put_status(conn, status)" => "Set status code",
+  "redirect(conn, to: path)" => "Send redirect"
+}
+
+# Question: What if you want to send JSON with a non-200 status?
+
+non_200_json = """
+How would you send JSON with a 404 status?
+Your answer: ???
+"""
+
+# Answer:
+def show(conn, %{"id" => id}) do
+  case find_agent(id) do
+    {:ok, agent} ->
+      json(conn, agent)
+
+    {:error, :not_found} ->
+      conn
+      |> put_status(:not_found)  # or 404
+      |> json(%{error: "Agent not found"})
+  end
+end
+```
+
+### Handling Request Body
+
+For POST requests, the body is parsed into `body_params`:
+
+```elixir
+def handle(conn, params) do
+  # For: POST /a2a
+  # Body: {"jsonrpc": "2.0", "method": "SendMessage", ...}
+
+  # params already contains parsed JSON:
+  # %{
+  #   "jsonrpc" => "2.0",
+  #   "method" => "SendMessage",
+  #   "params" => %{...},
+  #   "id" => 1
+  # }
+
+  method = params["method"]
+  rpc_params = params["params"]
+
+  case method do
+    "SendMessage" -> handle_send_message(conn, rpc_params)
+    "GetTask" -> handle_get_task(conn, rpc_params)
+    _ -> json(conn, %{error: "Unknown method"})
+  end
+end
+```
+
+---
+
+## Section 3: The Agent Card Controller
+
+### Building the Agent Card Endpoint
+
+```elixir
+defmodule AgentApiWeb.AgentCardController do
+  @moduledoc """
+  Controller for the A2A Agent Card endpoint.
+
+  The Agent Card tells other agents WHO this agent is
+  and WHAT it can do.
+  """
+  use AgentApiWeb, :controller
+
+  alias AgentApi.A2A.AgentCard
+
+  @doc """
+  Returns the Agent Card as JSON.
+
+  ## Example Response
+
+      {
+        "name": "Elixir Agent Framework",
+        "version": "0.1.0",
+        "url": "http://localhost:4000",
+        "capabilities": {
+          "streaming": false,
+          "pushNotifications": false
+        },
+        "skills": [...]
+      }
+
+  """
+  def show(conn, _params) do
+    base_url = build_base_url(conn)
+    card = AgentCard.build(base_url)
+    json(conn, card)
+  end
+
+  # Build the base URL from the connection
+  defp build_base_url(conn) do
+    scheme = if conn.scheme == :https, do: "https", else: "http"
+    host = conn.host
+    port = conn.port
+
+    if standard_port?(scheme, port) do
+      "#{scheme}://#{host}"
+    else
+      "#{scheme}://#{host}:#{port}"
+    end
+  end
+
+  defp standard_port?("http", 80), do: true
+  defp standard_port?("https", 443), do: true
+  defp standard_port?(_, _), do: false
+end
+```
+
+### 🤔 Agent Card Design
+
+```elixir
+# The Agent Card contains:
+
+agent_card_fields = %{
+  name: "Human-readable name of the agent",
+  version: "Agent version (semver)",
+  url: "Base URL for interacting with this agent",
+  capabilities: %{
+    streaming: "Can this agent stream responses?",
+    pushNotifications: "Can this agent push notifications?"
+  },
+  skills: [
+    %{
+      id: "Unique skill identifier",
+      name: "Human-readable name",
+      description: "What does this skill do?",
+      inputSchema: "JSON Schema for skill parameters"
+    }
+  ]
+}
+
+# Question: Should the Agent Card be hardcoded, from config, or dynamic?
+
+agent_card_source = """
+Options:
+1. Hardcoded in controller
+2. Loaded from config files
+3. Generated dynamically from AgentFramework
+
+Which would you choose and why?
+Your answer: ???
+"""
+
+# Answer:
+# We use a dedicated AgentCard module that:
+# - Has default values (name, version) that rarely change
+# - Generates skills list from what AgentServer supports
+# - Takes the URL as a parameter (dynamic based on request)
+#
+# This separates the data structure from the HTTP layer,
+# making it testable and potentially reusable for other
+# discovery mechanisms.
+```
+
+---
+
+## Section 4: Error Handling
+
+### Pattern Matching in Controllers
+
+```elixir
+# Use pattern matching for clean error handling:
+
+def show(conn, %{"id" => id}) when is_binary(id) do
+  case AgentServer.find(id) do
+    {:ok, agent} ->
+      json(conn, agent)
+
+    {:error, :not_found} ->
+      conn
+      |> put_status(:not_found)
+      |> json(%{error: "Agent not found", id: id})
+
+    {:error, reason} ->
+      conn
+      |> put_status(:internal_server_error)
+      |> json(%{error: "Internal error", details: inspect(reason)})
+  end
+end
+
+# Fallback for invalid params
+def show(conn, _params) do
+  conn
+  |> put_status(:bad_request)
+  |> json(%{error: "Missing required parameter: id"})
+end
+```
+
+### 🤔 Error Responses in JSON-RPC
+
+```elixir
+# JSON-RPC has standardized error responses:
+
+json_rpc_errors = %{
+  parse_error: %{code: -32700, message: "Parse error"},
+  invalid_request: %{code: -32600, message: "Invalid Request"},
+  method_not_found: %{code: -32601, message: "Method not found"},
+  invalid_params: %{code: -32602, message: "Invalid params"},
+  internal_error: %{code: -32603, message: "Internal error"}
+}
+
+# A2A adds custom error codes:
+a2a_errors = %{
+  agent_not_found: %{code: -32001, message: "Agent not found"},
+  task_not_found: %{code: -32002, message: "Task not found"}
+}
+
+# Question: Why does JSON-RPC use negative error codes?
+
+error_codes = """
+Your answer: ???
+"""
+
+# Answer:
+# JSON-RPC reserves negative codes for protocol-level errors.
+# Positive codes are available for application-specific errors.
+# This prevents conflicts between the protocol and your app.
+#
+# -32768 to -32000: Reserved for JSON-RPC
+# -32000 to -32099: Server errors (implementation-defined)
+# Positive numbers: Your application errors
+```
+
+### Creating an ErrorJSON Module
+
+```elixir
+# Phoenix uses a view module for rendering errors:
+
+defmodule AgentApiWeb.ErrorJSON do
+  @moduledoc """
+  Renders error responses as JSON.
+  """
+
+  def render("404.json", _assigns) do
+    %{errors: %{detail: "Not Found"}}
+  end
+
+  def render("500.json", _assigns) do
+    %{errors: %{detail: "Internal Server Error"}}
+  end
+
+  # Fallback
+  def render(template, _assigns) do
+    %{errors: %{detail: Phoenix.Controller.status_message_from_template(template)}}
+  end
+end
+```
+
+---
+
+## Section 5: Controller Best Practices
+
+### Keep Controllers Thin
+
+```elixir
+# DON'T: Business logic in controller
+def handle(conn, %{"method" => "SendMessage", "params" => params}) do
+  agent_name = params["agent"]
+
+  # Finding the agent - business logic!
+  pid = case Registry.lookup(AgentRegistry, agent_name) do
+    [{pid, _}] -> pid
+    [] ->
+      # Search all agents...
+      agents = DynamicSupervisor.which_children(AgentSupervisor)
+      Enum.find(agents, fn {_, pid, _, _} ->
+        GenServer.call(pid, :get_name) == agent_name
+      end)
+  end
+
+  # More business logic...
+end
+
+# DO: Delegate to a domain module
+def handle(conn, %{"method" => "SendMessage", "params" => params}) do
+  case TaskManager.send_message(params["agent"], params["action"], params["params"]) do
+    {:ok, result} -> json(conn, %{result: result})
+    {:error, :agent_not_found} -> json(conn, %{error: "Agent not found"})
+  end
+end
+```
+
+### 🤔 Single Responsibility
+
+```elixir
+# The controller's job is:
+controller_responsibility = [
+  "Parse HTTP request",
+  "Call domain functions",
+  "Format HTTP response"
+]
+
+# The controller should NOT:
+not_controller_job = [
+  "Implement business logic",
+  "Know about database queries",
+  "Validate business rules",
+  "Format data for storage"
+]
+
+# Question: Where does each concern belong in our A2A app?
+
+concern_locations = %{
+  "Parse JSON-RPC request" => "???",
+  "Dispatch to correct method" => "???",
+  "Find an agent by name" => "???",
+  "Send a task to an agent" => "???",
+  "Format JSON-RPC response" => "???"
+}
+
+# Answer:
+concern_locations = %{
+  "Parse JSON-RPC request" => "A2AController or JsonRpc module",
+  "Dispatch to correct method" => "A2AController",
+  "Find an agent by name" => "TaskManager module",
+  "Send a task to an agent" => "TaskManager → AgentServer",
+  "Format JSON-RPC response" => "JsonRpc module"
+}
+```
+
+---
+
+## Section 6: Interactive Exercises
+
+### Exercise 1: Build a Simple Controller
+
+```elixir
+# Create a controller that returns system info:
+
+# GET /health/status
+# Response: {"status": "ok", "uptime_seconds": 12345}
+
+# Your implementation:
+defmodule AgentApiWeb.HealthController do
+  use AgentApiWeb, :controller
+
+  def status(conn, _params) do
+    # How to get uptime?
+    # How to format response?
+  end
+end
+
+# Answer:
+defmodule AgentApiWeb.HealthController do
+  use AgentApiWeb, :controller
+
+  def status(conn, _params) do
+    {uptime_ms, _} = :erlang.statistics(:wall_clock)
+
+    json(conn, %{
+      status: "ok",
+      uptime_seconds: div(uptime_ms, 1000)
+    })
+  end
+end
+```
+
+### Exercise 2: Handle Path Parameters
+
+```elixir
+# Create an endpoint that returns agent info:
+
+# Route: GET /agents/:name
+# Success: {"name": "Worker-1", "status": "idle", ...}
+# Not found: 404 with {"error": "Agent not found"}
+
+# Your implementation:
+def show(conn, params) do
+  # 1. Extract name from params
+  # 2. Look up agent
+  # 3. Return appropriate response
+end
+
+# Answer:
+def show(conn, %{"name" => name}) do
+  case TaskManager.get_agent_state(name) do
+    {:ok, state} ->
+      json(conn, %{
+        name: state.name,
+        status: state.status,
+        inbox_count: length(state.inbox),
+        processed_count: state.processed_count
+      })
+
+    {:error, :agent_not_found} ->
+      conn
+      |> put_status(:not_found)
+      |> json(%{error: "Agent not found", name: name})
+  end
+end
+```
+
+### Exercise 3: Validate Request Body
+
+```elixir
+# Add validation to the SendMessage handler:
+
+# Required: agent (string), action (string)
+# Optional: params (object, default: {})
+
+# Your implementation:
+defp handle_send_message(conn, rpc_params, id) do
+  # Validate required fields
+  # Handle missing/invalid fields
+  # Call TaskManager if valid
+end
+
+# Answer:
+defp handle_send_message(conn, %{"agent" => agent, "action" => action} = params, id)
+     when is_binary(agent) and is_binary(action) do
+  task_params = Map.get(params, "params", %{})
+
+  case TaskManager.send_message(agent, action, task_params) do
+    {:ok, result} ->
+      json(conn, JsonRpc.success(result, id))
+
+    {:error, :agent_not_found} ->
+      json(conn, JsonRpc.agent_not_found(agent, id))
+  end
+end
+
+defp handle_send_message(conn, _params, id) do
+  json(conn, JsonRpc.invalid_params("Missing: agent, action", id))
+end
+```
+
+---
+
+## Section 7: Testing Controllers
+
+### Using ConnCase
+
+```elixir
+defmodule AgentApiWeb.AgentCardControllerTest do
+  use AgentApiWeb.ConnCase
+
+  describe "GET /.well-known/agent.json" do
+    test "returns valid Agent Card", %{conn: conn} do
+      conn = get(conn, "/.well-known/agent.json")
+
+      response = json_response(conn, 200)
+
+      assert response["name"] == "Elixir Agent Framework"
+      assert response["version"] == "0.1.0"
+      assert is_list(response["skills"])
+    end
+
+    test "includes required capabilities", %{conn: conn} do
+      conn = get(conn, "/.well-known/agent.json")
+      response = json_response(conn, 200)
+
+      assert Map.has_key?(response["capabilities"], "streaming")
+      assert Map.has_key?(response["capabilities"], "pushNotifications")
+    end
+  end
+end
+```
+
+### 🤔 Test Helpers
+
+```elixir
+# ConnCase provides helpful functions:
+
+test_helpers = %{
+  "get(conn, path)" => "Make GET request",
+  "post(conn, path, body)" => "Make POST request",
+  "json_response(conn, status)" => "Parse JSON response, assert status",
+  "response(conn, status)" => "Get response body, assert status",
+  "put_req_header(conn, key, value)" => "Set request header"
+}
+
+# Example POST test:
+test "sends message to agent", %{conn: conn} do
+  conn =
+    conn
+    |> put_req_header("content-type", "application/json")
+    |> post("/a2a", %{
+      "jsonrpc" => "2.0",
+      "method" => "SendMessage",
+      "params" => %{"agent" => "Worker-1", "action" => "search"},
+      "id" => 1
+    })
+
+  response = json_response(conn, 200)
+  assert response["result"]["status"] == "created"
+end
+```
+
+---
+
+## Key Takeaways
+
+1. **Controllers bridge HTTP and OTP** - They translate between HTTP requests and Elixir function calls
+
+2. **The conn flows through** - Unlike GenServer state, conn is transformed and returned
+
+3. **json/2 is your friend** - Simple way to send JSON responses with proper headers
+
+4. **Keep controllers thin** - Delegate to domain modules for business logic
+
+5. **Pattern match on params** - Clean way to handle different request shapes
+
+6. **Error handling is explicit** - Use put_status + json for error responses
+
+---
+
+## What's Next?
+
+In the next session, we'll explore **JSON-RPC and A2A Protocol**:
+
+* JSON-RPC 2.0 specification
+* Implementing A2A methods (SendMessage, GetTask)
+* Connecting HTTP requests to AgentServer
+* Task state machine
+
+You'll complete the bridge from HTTP to your OTP agents!
+
+---
+
+## Navigation
+
+← [Previous: Session 18 - Request Lifecycle and Routing](18_request_lifecycle_routing.livemd)
+
+→ [Next: Session 20 - JSON-RPC and A2A Protocol](20_json_rpc_a2a.livemd)

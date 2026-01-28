@@ -1,0 +1,624 @@
+# Session 21: Checkpoint - Phoenix A2A Integration
+
+```elixir
+Mix.install([])
+```
+
+## Introduction
+
+Congratulations! You've learned all the core Phoenix concepts for building an A2A API:
+
+* **Endpoint** - HTTP entry point
+* **Router** - URL to controller mapping
+* **Pipelines** - Middleware chains
+* **Controllers** - Request handling
+* **JSON-RPC** - A2A protocol format
+
+Now it's time to verify that everything works together and that you have a
+fully functional A2A endpoint for your agent framework.
+
+## Project Goal
+
+Build a working Phoenix API that:
+
+1. Serves Agent Card at `GET /.well-known/agent.json`
+2. Accepts JSON-RPC requests at `POST /a2a`
+3. Dispatches tasks to supervised AgentServer processes
+4. Returns proper JSON-RPC responses
+
+---
+
+## Part 1: Project Structure Review
+
+### Current Structure
+
+```
+learningerlangotp/
+├── agent_framework/           # Phase 3 - OTP Foundation
+│   ├── lib/agent_framework/
+│   │   ├── agent_server.ex    # GenServer for agents
+│   │   ├── agent_supervisor.ex # DynamicSupervisor
+│   │   ├── application.ex     # OTP Application
+│   │   ├── message.ex         # Message struct
+│   │   └── agent.ex           # Agent struct
+│   └── mix.exs
+│
+├── agent_api/                 # Phase 4 - Phoenix HTTP Layer
+│   ├── lib/
+│   │   ├── agent_api/
+│   │   │   ├── application.ex    # Phoenix Application
+│   │   │   └── a2a/
+│   │   │       ├── agent_card.ex # Agent Card data
+│   │   │       ├── json_rpc.ex   # JSON-RPC parsing
+│   │   │       └── task_manager.ex # Bridge to AgentFramework
+│   │   └── agent_api_web/
+│   │       ├── endpoint.ex       # HTTP entry point
+│   │       ├── router.ex         # Routes
+│   │       └── controllers/
+│   │           ├── agent_card_controller.ex
+│   │           ├── a2a_controller.ex
+│   │           └── health_controller.ex
+│   ├── config/
+│   └── mix.exs                   # Depends on agent_framework
+│
+└── notebooks/                 # Learning notebooks
+    ├── 17_phoenix_up_and_running.livemd
+    ├── 18_request_lifecycle_routing.livemd
+    ├── 19_controllers_json_apis.livemd
+    ├── 20_json_rpc_a2a.livemd
+    └── 21_checkpoint_phoenix_a2a.livemd
+```
+
+### 🤔 Architecture Reflection
+
+```elixir
+# Think about the relationship between the two projects:
+
+architecture = %{
+  agent_framework: """
+    - Pure OTP/Elixir
+    - No HTTP knowledge
+    - Could work with CLI, WebSocket, etc.
+    - Manages agent lifecycle and state
+  """,
+
+  agent_api: """
+    - Phoenix HTTP layer
+    - Depends on agent_framework
+    - Translates HTTP ↔ Elixir
+    - A2A protocol implementation
+  """,
+
+  why_separate: """
+    Question: Why not put everything in one project?
+
+    Your answer: ???
+  """
+}
+
+# Answer:
+# Separation of concerns:
+# - agent_framework is transport-agnostic
+# - agent_api handles HTTP specifics
+# - Could add agent_cli for command line
+# - Could add agent_ws for WebSocket
+# - Each project has clear responsibility
+# - Easier to test in isolation
+```
+
+---
+
+## Part 2: Verification Steps
+
+### Step 1: Install Dependencies
+
+```bash
+cd learningerlangotp/agent_api
+mix deps.get
+```
+
+Expected: All dependencies downloaded successfully.
+
+### Step 2: Compile
+
+```bash
+mix compile
+```
+
+Expected: No compilation errors or warnings.
+
+### Step 3: View Routes
+
+```bash
+mix phx.routes
+```
+
+Expected output:
+```
+  GET   /.well-known/agent.json   AgentApiWeb.AgentCardController :show
+ POST   /a2a                       AgentApiWeb.A2AController :handle
+  GET   /health                    AgentApiWeb.HealthController :index
+```
+
+### Step 4: Start the Server
+
+```bash
+iex -S mix phx.server
+```
+
+Expected:
+- Server starts on port 4000
+- AgentFramework.Supervisor starts (from dependency)
+- No errors in console
+
+---
+
+## Part 3: Testing the Endpoints
+
+### Test 1: Health Check
+
+```bash
+curl http://localhost:4000/health
+```
+
+Expected response:
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-01-28T10:00:00.000000Z"
+}
+```
+
+### Test 2: Agent Card
+
+```bash
+curl http://localhost:4000/.well-known/agent.json | jq
+```
+
+Expected response:
+```json
+{
+  "name": "Elixir Agent Framework",
+  "version": "0.1.0",
+  "url": "http://localhost:4000",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false
+  },
+  "skills": [
+    {
+      "id": "search",
+      "name": "Search",
+      "description": "Search for information based on a query",
+      "inputSchema": {...}
+    },
+    {
+      "id": "analyze",
+      "name": "Analyze",
+      "description": "Analyze provided data and return insights",
+      "inputSchema": {...}
+    },
+    {
+      "id": "summarize",
+      "name": "Summarize",
+      "description": "Summarize text content",
+      "inputSchema": {...}
+    }
+  ]
+}
+```
+
+Verify:
+- [ ] Has name, version, url
+- [ ] Has capabilities object
+- [ ] Has skills array with search, analyze, summarize
+
+### Test 3: List Agents (Empty)
+
+```bash
+curl -X POST http://localhost:4000/a2a \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"ListAgents","params":{},"id":1}' | jq
+```
+
+Expected:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "agents": [],
+    "count": 0
+  },
+  "id": 1
+}
+```
+
+### Test 4: Start an Agent
+
+```bash
+curl -X POST http://localhost:4000/a2a \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"StartAgent","params":{"name":"Worker-1"},"id":2}' | jq
+```
+
+Expected:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "started",
+    "agent": "Worker-1"
+  },
+  "id": 2
+}
+```
+
+### Test 5: List Agents (With Agent)
+
+```bash
+curl -X POST http://localhost:4000/a2a \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"ListAgents","params":{},"id":3}' | jq
+```
+
+Expected:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "agents": ["Worker-1"],
+    "count": 1
+  },
+  "id": 3
+}
+```
+
+### Test 6: Send a Message
+
+```bash
+curl -X POST http://localhost:4000/a2a \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0",
+    "method":"SendMessage",
+    "params":{
+      "agent":"Worker-1",
+      "action":"search",
+      "params":{"query":"Elixir OTP"}
+    },
+    "id":4
+  }' | jq
+```
+
+Expected:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "created",
+    "agent": "Worker-1",
+    "task_id": null,
+    "result": null
+  },
+  "id": 4
+}
+```
+
+### Test 7: Get Agent State
+
+```bash
+curl -X POST http://localhost:4000/a2a \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"GetAgentState","params":{"agent":"Worker-1"},"id":5}' | jq
+```
+
+Expected:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "name": "Worker-1",
+    "status": "idle",
+    "inbox_count": 1,
+    "processed_count": 0,
+    "memory_keys": []
+  },
+  "id": 5
+}
+```
+
+Verify: inbox_count should be 1 (task waiting).
+
+### Test 8: Process the Task
+
+```bash
+curl -X POST http://localhost:4000/a2a \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"ProcessNext","params":{"agent":"Worker-1"},"id":6}' | jq
+```
+
+Expected:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "completed",
+    "agent": "Worker-1",
+    "task_id": "...",
+    "result": {"ok": "Search results for: Elixir OTP"}
+  },
+  "id": 6
+}
+```
+
+### Test 9: Verify Inbox Empty
+
+```bash
+curl -X POST http://localhost:4000/a2a \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"GetAgentState","params":{"agent":"Worker-1"},"id":7}' | jq
+```
+
+Expected:
+- inbox_count: 0
+- processed_count: 1
+
+### Test 10: Error Handling - Agent Not Found
+
+```bash
+curl -X POST http://localhost:4000/a2a \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"SendMessage","params":{"agent":"NonExistent","action":"search"},"id":8}' | jq
+```
+
+Expected:
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32001,
+    "message": "Agent not found: NonExistent"
+  },
+  "id": 8
+}
+```
+
+### Test 11: Error Handling - Invalid JSON-RPC
+
+```bash
+curl -X POST http://localhost:4000/a2a \
+  -H "Content-Type: application/json" \
+  -d '{"method":"SendMessage","params":{}}' | jq
+```
+
+Expected:
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32600,
+    "message": "Invalid Request"
+  },
+  "id": null
+}
+```
+
+---
+
+## Part 4: Run Automated Tests
+
+```bash
+cd agent_api
+mix test
+```
+
+Expected: All tests pass.
+
+If tests fail, check:
+- [ ] agent_framework application starts correctly
+- [ ] Test setup creates necessary agents
+- [ ] JSON-RPC format is correct
+
+---
+
+## Part 5: Interactive IEx Session
+
+Start an interactive session:
+
+```bash
+cd agent_api
+iex -S mix
+```
+
+Try these commands:
+
+```elixir
+# Check both supervision trees are running
+Supervisor.which_children(AgentApi.Supervisor)
+Supervisor.which_children(AgentFramework.Supervisor)
+
+# Start an agent through TaskManager
+alias AgentApi.A2A.TaskManager
+{:ok, pid} = TaskManager.start_agent("IEx-Worker")
+
+# Get its state
+{:ok, state} = TaskManager.get_agent_state("IEx-Worker")
+IO.inspect(state, label: "Agent State")
+
+# Send a task
+{:ok, result} = TaskManager.send_message("IEx-Worker", "analyze", %{data: "test data"})
+IO.inspect(result, label: "Send Result")
+
+# Check inbox
+{:ok, state} = TaskManager.get_agent_state("IEx-Worker")
+IO.inspect(state.inbox_count, label: "Inbox Count")
+
+# Process the task
+{:ok, result} = TaskManager.process_next("IEx-Worker")
+IO.inspect(result, label: "Process Result")
+
+# List all agents
+TaskManager.list_agents()
+```
+
+---
+
+## Part 6: Verification Checklist
+
+### Compilation
+- [ ] `cd agent_api && mix deps.get` succeeds
+- [ ] `mix compile` - no warnings
+- [ ] `mix phx.routes` shows correct routes
+
+### Runtime
+- [ ] `iex -S mix phx.server` starts on port 4000
+- [ ] AgentSupervisor starts (from agent_framework)
+- [ ] No errors in console
+
+### Agent Card Endpoint
+- [ ] `GET /.well-known/agent.json` returns 200
+- [ ] Response has: name, version, url
+- [ ] Response has: capabilities (streaming, pushNotifications)
+- [ ] Response has: skills array with id, name, description, inputSchema
+
+### A2A JSON-RPC Endpoint
+- [ ] `POST /a2a` with ListAgents works
+- [ ] `POST /a2a` with StartAgent creates agent
+- [ ] `POST /a2a` with SendMessage queues task
+- [ ] `POST /a2a` with GetAgentState shows inbox_count
+- [ ] `POST /a2a` with ProcessNext returns result
+- [ ] Invalid JSON-RPC returns error code -32600
+- [ ] Unknown method returns error code -32601
+- [ ] Agent not found returns error code -32001
+
+### Tests
+- [ ] `mix test` passes all tests
+
+---
+
+## Part 7: Common Issues and Solutions
+
+### Issue: "Cannot find agent_framework"
+
+```
+** (Mix) Could not start application agent_api
+```
+
+Solution: Ensure agent_framework compiles first:
+```bash
+cd ../agent_framework && mix compile
+cd ../agent_api && mix deps.get
+```
+
+### Issue: "AgentSupervisor not started"
+
+```
+** (exit) no process: the process is not alive
+```
+
+Solution: agent_framework Application might not be starting.
+Check `mix.exs` has `mod: {AgentFramework.Application, []}`.
+
+### Issue: "Port 4000 already in use"
+
+```
+** (ErlangError) Erlang error: :eaddrinuse
+```
+
+Solution: Kill the existing process or use a different port:
+```bash
+lsof -i :4000 | grep LISTEN | awk '{print $2}' | xargs kill
+# or
+PORT=4001 mix phx.server
+```
+
+### Issue: "JSON parse error"
+
+```
+{"error":{"code":-32700,"message":"Parse error"}}
+```
+
+Solution: Ensure Content-Type header is set:
+```bash
+curl -H "Content-Type: application/json" ...
+```
+
+---
+
+## Key Learnings from Phase 4
+
+You've now built a complete HTTP API for your agent framework:
+
+1. **Phoenix provides the HTTP layer** - Endpoint, Router, Controllers
+2. **Controllers bridge HTTP and OTP** - Translate requests to function calls
+3. **JSON-RPC standardizes the protocol** - Consistent request/response format
+4. **Separation of concerns** - agent_api depends on agent_framework
+5. **A2A enables agent discovery** - Agent Card tells clients what you can do
+6. **Testing validates everything** - curl for manual, ExUnit for automated
+
+---
+
+## What's Next: Phase 5 Preview
+
+Phase 5 will add **Distribution and Integration**:
+
+* **Multi-node clustering** - Agents across BEAM nodes
+* **Phoenix.PubSub** - Cross-node message broadcasting
+* **ETS** - Shared state for high-performance reads
+* **Full A2A workflow** - Complete agent-to-agent communication
+
+Your Phoenix API is ready to scale horizontally!
+
+---
+
+## Complete Test Script
+
+Save this as `test_a2a.sh` for quick verification:
+
+```bash
+#!/bin/bash
+BASE_URL="http://localhost:4000"
+
+echo "=== Testing A2A API ==="
+
+echo -e "\n1. Health Check"
+curl -s "$BASE_URL/health" | jq
+
+echo -e "\n2. Agent Card"
+curl -s "$BASE_URL/.well-known/agent.json" | jq '.name, .version, .skills | length'
+
+echo -e "\n3. List Agents (empty)"
+curl -s -X POST "$BASE_URL/a2a" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"ListAgents","params":{},"id":1}' | jq '.result.count'
+
+echo -e "\n4. Start Agent"
+curl -s -X POST "$BASE_URL/a2a" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"StartAgent","params":{"name":"Test-Worker"},"id":2}' | jq '.result.status'
+
+echo -e "\n5. Send Message"
+curl -s -X POST "$BASE_URL/a2a" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"SendMessage","params":{"agent":"Test-Worker","action":"search","params":{"query":"test"}},"id":3}' | jq '.result.status'
+
+echo -e "\n6. Get Agent State"
+curl -s -X POST "$BASE_URL/a2a" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"GetAgentState","params":{"agent":"Test-Worker"},"id":4}' | jq '.result.inbox_count'
+
+echo -e "\n7. Process Task"
+curl -s -X POST "$BASE_URL/a2a" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"ProcessNext","params":{"agent":"Test-Worker"},"id":5}' | jq '.result.status'
+
+echo -e "\n=== All tests complete ==="
+```
+
+---
+
+## Navigation
+
+← [Previous: Session 20 - JSON-RPC and A2A Protocol](20_json_rpc_a2a.livemd)
+
+→ [Next: Phase 5 - Distribution and Integration]

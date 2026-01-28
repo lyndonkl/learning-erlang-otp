@@ -1,0 +1,741 @@
+# Session 18: Request Lifecycle and Routing
+
+```elixir
+Mix.install([])
+```
+
+## Introduction
+
+In Session 17, you learned that Phoenix provides the HTTP layer for your OTP application.
+Now let's trace exactly how a request flows through Phoenix, from the moment it arrives
+to when the response is sent.
+
+Understanding this flow is crucial for debugging and for knowing where to put your code.
+
+### Sources for This Session
+
+This session synthesizes concepts from:
+
+* [Phoenix - Request Life-cycle](https://hexdocs.pm/phoenix/request_lifecycle.html)
+* [Phoenix - Routing](https://hexdocs.pm/phoenix/routing.html)
+* [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/)
+
+## Learning Goals
+
+By the end of this session, you'll be able to:
+
+* Trace a request through Phoenix's pipeline
+* Define routes for A2A endpoints
+* Understand and create pipelines
+* Use plugs for cross-cutting concerns
+* Match on path parameters
+
+---
+
+## Section 1: The Request Lifecycle
+
+### 🤔 Opening Reflection
+
+Before we dive in, think about GenServer message handling:
+
+```elixir
+# In GenServer, a message flows like this:
+#
+# 1. Client calls GenServer.call(pid, :get_state)
+# 2. Message {:call, from, :get_state} arrives at process mailbox
+# 3. handle_call(:get_state, from, state) runs
+# 4. Returns {:reply, state, state}
+# 5. Client receives the reply
+
+# Question: What's the analogous flow for HTTP?
+#
+# 1. Client sends GET /agents
+# 2. Request arrives at ???
+# 3. ??? runs
+# 4. Returns ???
+# 5. Client receives ???
+
+http_flow = """
+Your answer:
+1. Client sends GET /agents
+2. Request arrives at: ???
+3. ??? runs
+4. Returns: ???
+5. Client receives: ???
+"""
+
+# Answer:
+# 1. Client sends GET /agents
+# 2. Request arrives at Endpoint
+# 3. Controller action runs (after routing)
+# 4. Returns conn with response data
+# 5. Client receives HTTP response
+```
+
+### The Complete Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        HTTP Request                                      │
+│                             │                                            │
+│                             ▼                                            │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                        ENDPOINT                                    │  │
+│  │  Plug.RequestId → Plug.Telemetry → Plug.Parsers → ...            │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                             │                                            │
+│                             ▼                                            │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                         ROUTER                                     │  │
+│  │  match path → select pipeline → forward to controller             │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                             │                                            │
+│                             ▼                                            │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                       PIPELINE                                     │  │
+│  │  plug :accepts → plug :authenticate → plug :rate_limit            │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                             │                                            │
+│                             ▼                                            │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                      CONTROLLER                                    │  │
+│  │  action(conn, params) → process → send response                   │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                             │                                            │
+│                             ▼                                            │
+│                       HTTP Response                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 🤔 What Happens At Each Stage?
+
+```elixir
+stages = %{
+  endpoint: """
+    What happens here?
+    - ???
+  """,
+
+  router: """
+    What happens here?
+    - ???
+  """,
+
+  pipeline: """
+    What happens here?
+    - ???
+  """,
+
+  controller: """
+    What happens here?
+    - ???
+  """
+}
+
+# Answers:
+stages = %{
+  endpoint: """
+    - Receives raw HTTP request from web server
+    - Runs common plugs (request ID, telemetry, body parsing)
+    - Wraps request data in `conn` struct
+    - Forwards to Router
+  """,
+
+  router: """
+    - Pattern matches on HTTP method + path
+    - Selects which pipeline(s) to run
+    - Determines which controller/action to call
+    - Like GenServer dispatch, but for URLs
+  """,
+
+  pipeline: """
+    - Runs middleware specific to route type
+    - :api pipeline for JSON APIs
+    - :browser pipeline for HTML pages
+    - Can add authentication, rate limiting, etc.
+  """,
+
+  controller: """
+    - Your application code runs here
+    - Receives conn and parsed params
+    - Calls business logic (e.g., AgentFramework)
+    - Builds and sends response
+  """
+}
+```
+
+---
+
+## Section 2: The Router
+
+### Router Fundamentals
+
+The router is like a big pattern match on HTTP method + path:
+
+```elixir
+# lib/agent_api_web/router.ex
+
+defmodule AgentApiWeb.Router do
+  use AgentApiWeb, :router
+
+  # Define a pipeline (middleware chain)
+  pipeline :api do
+    plug :accepts, ["json"]
+  end
+
+  # Routes that use the :api pipeline
+  scope "/", AgentApiWeb do
+    pipe_through :api
+
+    # GET /.well-known/agent.json → AgentCardController.show/2
+    get "/.well-known/agent.json", AgentCardController, :show
+
+    # POST /a2a → A2AController.handle/2
+    post "/a2a", A2AController, :handle
+  end
+end
+```
+
+### 🤔 Router vs GenServer Dispatch
+
+```elixir
+# Think about the similarity:
+
+# GenServer dispatch:
+def handle_call(:get_state, _from, state), do: {:reply, state, state}
+def handle_call({:recall, key}, _from, state), do: {:reply, Map.get(state.memory, key), state}
+
+# Router dispatch:
+get "/.well-known/agent.json", AgentCardController, :show
+post "/a2a", A2AController, :handle
+
+# Question: What's being pattern matched in each case?
+
+pattern_matching = %{
+  genserver: "Matches on: ???",
+  router: "Matches on: ???"
+}
+
+# Answer:
+pattern_matching = %{
+  genserver: "Matches on: message structure (atom, tuple, etc.)",
+  router: "Matches on: HTTP method (GET/POST) + URL path"
+}
+
+# Both are declarative: "When X arrives, do Y"
+```
+
+### Route Syntax
+
+```elixir
+# Basic routes
+get "/path", Controller, :action      # GET /path
+post "/path", Controller, :action     # POST /path
+put "/path", Controller, :action      # PUT /path
+patch "/path", Controller, :action    # PATCH /path
+delete "/path", Controller, :action   # DELETE /path
+
+# Path parameters (like GenServer message payload)
+get "/agents/:name", AgentController, :show
+# GET /agents/Worker-1 → params = %{"name" => "Worker-1"}
+
+# Wildcard
+get "/files/*path", FileController, :show
+# GET /files/a/b/c → params = %{"path" => ["a", "b", "c"]}
+```
+
+### 🤔 A2A Routes
+
+```elixir
+# The A2A protocol needs two endpoints:
+
+# 1. Agent Card - Discovery
+#    GET /.well-known/agent.json
+#    Returns: Who is this agent? What can it do?
+
+# 2. JSON-RPC - Interaction
+#    POST /a2a
+#    Body: {"jsonrpc": "2.0", "method": "SendMessage", ...}
+#    Returns: Result of the RPC call
+
+# Question: Why GET for Agent Card and POST for JSON-RPC?
+
+http_methods = %{
+  agent_card_uses_get: "Because ???",
+  json_rpc_uses_post: "Because ???"
+}
+
+# Answer:
+http_methods = %{
+  agent_card_uses_get: """
+    GET is for retrieving data without side effects.
+    The Agent Card is read-only discovery information.
+    GET can be cached, bookmarked, linked to.
+  """,
+  json_rpc_uses_post: """
+    POST is for operations that may have side effects.
+    JSON-RPC can modify state (SendMessage, StartAgent).
+    POST body carries the method and parameters.
+  """
+}
+```
+
+---
+
+## Section 3: Pipelines
+
+### What Are Pipelines?
+
+Pipelines are named groups of plugs that run before your controller:
+
+```elixir
+pipeline :api do
+  plug :accepts, ["json"]              # Only accept JSON
+  plug :fetch_session                  # Load session (if needed)
+  plug :protect_from_forgery           # CSRF protection (forms)
+end
+
+pipeline :authenticated do
+  plug :api                            # Include :api pipeline
+  plug MyApp.AuthPlug                  # Verify authentication
+end
+
+scope "/api/v1", MyApp do
+  pipe_through :authenticated          # Use authenticated pipeline
+
+  resources "/secrets", SecretController
+end
+```
+
+### 🤔 GenServer Doesn't Have Pipelines
+
+```elixir
+# GenServer has no built-in "before every callback" hook.
+# If you wanted common logic before every handle_call, you'd have to:
+
+def handle_call(request, from, state) do
+  # Manual "middleware" at the start of every callback
+  state = update_last_access_time(state)
+  Logger.info("Handling #{inspect(request)}")
+
+  do_handle_call(request, from, state)
+end
+
+# Question: Why does Phoenix have pipelines but GenServer doesn't?
+
+pipeline_reasoning = """
+Your answer: ???
+"""
+
+# Answer:
+# HTTP has cross-cutting concerns that apply to MANY routes:
+# - Authentication (check token before EVERY protected route)
+# - Content negotiation (parse JSON for ALL API routes)
+# - CORS headers (add to ALL responses)
+# - Rate limiting (check on ALL requests)
+#
+# GenServer messages are more varied - each callback
+# typically has its own specific logic. The "common pattern"
+# IS the GenServer behavior itself (receive loop, reply handling).
+```
+
+### The :api Pipeline
+
+For our A2A API, we use a simple :api pipeline:
+
+```elixir
+pipeline :api do
+  plug :accepts, ["json"]
+end
+
+# What does :accepts do?
+# 1. Checks the Accept header of incoming requests
+# 2. If client doesn't accept JSON, returns 406 Not Acceptable
+# 3. Sets format to :json in conn for rendering
+
+# This ensures our API only speaks JSON.
+```
+
+---
+
+## Section 4: Plugs
+
+### What Is a Plug?
+
+A plug is a function that transforms the `conn`:
+
+```elixir
+# A plug can be a function:
+def my_plug(conn, opts) do
+  # Transform conn somehow
+  conn
+  |> put_resp_header("x-custom-header", "value")
+end
+
+# Or a module:
+defmodule MyPlug do
+  def init(opts), do: opts  # Called at compile time
+
+  def call(conn, opts) do   # Called at request time
+    # Transform conn
+    conn
+  end
+end
+```
+
+### 🤔 The Conn Pipeline
+
+```elixir
+# Plugs chain together, each transforming the conn:
+
+# conn (initial)
+#   │
+#   ▼ Plug.RequestId
+# conn (with :request_id in assigns)
+#   │
+#   ▼ Plug.Parsers
+# conn (with :body_params from JSON)
+#   │
+#   ▼ Router
+# conn (with :path_params from URL)
+#   │
+#   ▼ :api pipeline
+# conn (format set to :json)
+#   │
+#   ▼ Controller
+# conn (with response body and status)
+
+# Question: What happens if a plug wants to SHORT CIRCUIT?
+# (Like authentication failing)
+
+short_circuit = """
+Your answer: ???
+"""
+
+# Answer:
+# The plug can call `halt(conn)` which sets conn.halted = true
+# Subsequent plugs check this and skip processing.
+# The response is sent immediately.
+#
+# def call(conn, _opts) do
+#   if valid_token?(conn) do
+#     conn
+#   else
+#     conn
+#     |> put_status(401)
+#     |> json(%{error: "Unauthorized"})
+#     |> halt()
+#   end
+# end
+```
+
+### Common Plugs
+
+```elixir
+# Built-in plugs:
+plug Plug.RequestId      # Add unique ID for tracing
+plug Plug.Logger         # Log requests
+plug Plug.Parsers        # Parse request bodies
+plug Plug.Session        # Session management
+plug Plug.Head           # Convert HEAD to GET
+
+# Phoenix plugs:
+plug :accepts, ["json"]  # Content negotiation
+plug :fetch_session      # Load session data
+plug :protect_from_forgery  # CSRF protection
+
+# Custom plugs:
+plug MyApp.AuthPlug      # Your authentication logic
+plug MyApp.RateLimitPlug # Rate limiting
+```
+
+---
+
+## Section 5: Scopes and Organization
+
+### Using Scopes
+
+Scopes group related routes and apply common settings:
+
+```elixir
+defmodule AgentApiWeb.Router do
+  use AgentApiWeb, :router
+
+  pipeline :api do
+    plug :accepts, ["json"]
+  end
+
+  # Main A2A endpoints
+  scope "/", AgentApiWeb do
+    pipe_through :api
+
+    get "/.well-known/agent.json", AgentCardController, :show
+    post "/a2a", A2AController, :handle
+  end
+
+  # Health/monitoring endpoints
+  scope "/health", AgentApiWeb do
+    pipe_through :api
+
+    get "/", HealthController, :index
+    get "/ready", HealthController, :ready
+  end
+
+  # Admin endpoints (could have different auth)
+  scope "/admin", AgentApiWeb.Admin do
+    pipe_through [:api, :admin_auth]
+
+    get "/agents", AgentController, :index
+  end
+end
+```
+
+### 🤔 Viewing Routes
+
+```elixir
+# You can see all routes with:
+# mix phx.routes
+
+# This shows:
+# GET    /.well-known/agent.json   AgentApiWeb.AgentCardController :show
+# POST   /a2a                       AgentApiWeb.A2AController :handle
+# GET    /health                    AgentApiWeb.HealthController :index
+
+# Question: Why is this useful during development?
+
+routes_usefulness = """
+Your answer: ???
+"""
+
+# Answer:
+# - See ALL routes at a glance
+# - Verify routes are defined correctly
+# - Check which controller handles what
+# - Find typos in path definitions
+# - Understand the full API surface
+```
+
+---
+
+## Section 6: A2A Routes Deep Dive
+
+### The Agent Card Route
+
+```elixir
+# GET /.well-known/agent.json → AgentCardController.show/2
+
+# Why this specific path?
+# - `.well-known` is a standard URI prefix (RFC 8615)
+# - Used for discovery of site-wide metadata
+# - Common examples:
+#   - /.well-known/security.txt
+#   - /.well-known/openid-configuration
+#   - /.well-known/agent.json (A2A)
+
+# The controller action:
+def show(conn, _params) do
+  card = AgentCard.build(base_url(conn))
+  json(conn, card)
+end
+
+# Note: No path parameters, no complex parsing.
+# Just return the Agent Card as JSON.
+```
+
+### The JSON-RPC Route
+
+```elixir
+# POST /a2a → A2AController.handle/2
+
+# A2A uses JSON-RPC 2.0 over HTTP.
+# All methods go to the same endpoint; the "method" is in the body.
+
+# Request:
+# POST /a2a
+# Content-Type: application/json
+# {
+#   "jsonrpc": "2.0",
+#   "method": "SendMessage",
+#   "params": {"agent": "Worker-1", "action": "search"},
+#   "id": 1
+# }
+
+# The controller must:
+# 1. Parse the JSON-RPC request
+# 2. Dispatch based on "method"
+# 3. Return a JSON-RPC response
+
+# Question: Why use JSON-RPC instead of REST?
+
+json_rpc_vs_rest = """
+REST would be:
+  POST /agents/Worker-1/tasks
+  GET  /agents/Worker-1/tasks/123
+
+JSON-RPC is:
+  POST /a2a  {"method": "SendMessage", ...}
+  POST /a2a  {"method": "GetTask", ...}
+
+Why might A2A prefer JSON-RPC?
+Your answer: ???
+"""
+
+# Answer:
+# - Single endpoint simplifies discovery (just /a2a)
+# - Consistent request/response format
+# - Easy to add new methods without new URLs
+# - Matches existing JSON-RPC ecosystem and tooling
+# - Better for agent-to-agent automation
+```
+
+---
+
+## Section 7: Interactive Exercises
+
+### Exercise 1: Trace a Request
+
+```elixir
+# Trace this request through the system:
+# curl http://localhost:4000/.well-known/agent.json
+
+trace = """
+1. HTTP GET arrives at: ???
+2. Plug.Parsers does: ???
+3. Router matches: ???
+4. Pipeline :api runs: ???
+5. Controller.show receives: ???
+6. Response is: ???
+"""
+
+# Answer:
+trace = """
+1. HTTP GET arrives at: AgentApiWeb.Endpoint
+2. Plug.Parsers does: Nothing (GET has no body)
+3. Router matches: GET /.well-known/agent.json → AgentCardController :show
+4. Pipeline :api runs: plug :accepts, ["json"]
+5. Controller.show receives: conn, %{} (empty params)
+6. Response is: JSON Agent Card with 200 OK
+"""
+```
+
+### Exercise 2: Add a New Route
+
+```elixir
+# Task: Add a route for getting agent info by name
+
+# 1. What HTTP method?
+# 2. What path pattern?
+# 3. What controller/action?
+# 4. How do you access the agent name in the controller?
+
+new_route = """
+# In router.ex:
+??? "/???", ???, :???
+
+# In controller:
+def ???(conn, %{"???" => ???}) do
+  # Get agent info
+  # Return JSON
+end
+"""
+
+# Answer:
+# In router.ex:
+get "/agents/:name", AgentController, :show
+
+# In controller:
+def show(conn, %{"name" => name}) do
+  case TaskManager.get_agent_state(name) do
+    {:ok, state} -> json(conn, state)
+    {:error, :not_found} -> send_resp(conn, 404, "Not found")
+  end
+end
+```
+
+### Exercise 3: Create a Pipeline
+
+```elixir
+# Task: Create a pipeline that logs all requests
+
+# 1. Define the plug
+# 2. Add it to a pipeline
+# 3. Apply the pipeline to routes
+
+logging_pipeline = """
+# The plug:
+defmodule AgentApiWeb.Plugs.RequestLogger do
+  def init(opts), do: opts
+
+  def call(conn, _opts) do
+    # What to log?
+    # How to log it?
+    # What to return?
+  end
+end
+
+# In router:
+pipeline :logged_api do
+  # ???
+end
+"""
+
+# Answer:
+defmodule AgentApiWeb.Plugs.RequestLogger do
+  require Logger
+
+  def init(opts), do: opts
+
+  def call(conn, _opts) do
+    Logger.info("[#{conn.method}] #{conn.request_path}")
+    conn
+  end
+end
+
+# In router:
+pipeline :logged_api do
+  plug :accepts, ["json"]
+  plug AgentApiWeb.Plugs.RequestLogger
+end
+
+scope "/", AgentApiWeb do
+  pipe_through :logged_api
+  # routes...
+end
+```
+
+---
+
+## Key Takeaways
+
+1. **Request flows through layers** - Endpoint → Router → Pipeline → Controller → Response
+
+2. **Router is pattern matching** - Like GenServer dispatch, but on HTTP method + path
+
+3. **Pipelines are middleware chains** - Common logic before controllers (auth, parsing, etc.)
+
+4. **Plugs transform conn** - Each plug receives conn, does something, returns conn
+
+5. **Scopes organize routes** - Group related routes with common settings
+
+6. **A2A uses two routes** - Agent Card (GET) for discovery, JSON-RPC (POST) for interaction
+
+---
+
+## What's Next?
+
+In the next session, we'll explore **Controllers and JSON APIs**:
+
+* Implementing controller actions
+* Handling JSON request/response
+* Building the Agent Card controller
+* Error handling patterns
+
+You'll see how controllers bridge HTTP and your OTP agents!
+
+---
+
+## Navigation
+
+← [Previous: Session 17 - Phoenix Up and Running](17_phoenix_up_and_running.livemd)
+
+→ [Next: Session 19 - Controllers and JSON APIs](19_controllers_json_apis.livemd)

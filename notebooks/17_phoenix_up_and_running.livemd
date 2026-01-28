@@ -1,0 +1,547 @@
+# Session 17: Phoenix - Up and Running
+
+```elixir
+Mix.install([])
+```
+
+## Introduction
+
+In Phase 3, you built a solid OTP foundation: `AgentServer` (GenServer),
+`AgentSupervisor` (DynamicSupervisor), and an Application module. Your agents
+can now process tasks, maintain memory, and automatically recover from crashes.
+
+But there's a problem: **How do EXTERNAL clients communicate with your agents?**
+
+Your agents speak Erlang messages. The outside world speaks HTTP.
+
+This is where **Phoenix** comes in.
+
+### Sources for This Session
+
+This session synthesizes concepts from:
+
+* [Phoenix - Up and Running](https://hexdocs.pm/phoenix/up_and_running.html)
+* [Phoenix - Directory Structure](https://hexdocs.pm/phoenix/directory_structure.html)
+* [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/)
+
+## Learning Goals
+
+By the end of this session, you'll be able to:
+
+* Explain what Phoenix provides (HTTP layer for OTP)
+* Understand the Phoenix project structure
+* See how Phoenix fits into OTP supervision trees
+* Create an API-only Phoenix project
+
+---
+
+## Section 1: Why Phoenix?
+
+### 🤔 Opening Reflection
+
+Before we dive in, think about these questions:
+
+```elixir
+reflection = %{
+  current_situation: """
+    Your agent_framework can:
+    - Start agents with AgentSupervisor.start_agent("Worker-1")
+    - Send tasks with AgentServer.send_task(agent, :search, %{query: "OTP"})
+    - Process tasks with AgentServer.process_next(agent)
+
+    But WHO can call these functions?
+    Answer: Only Elixir code running in the same BEAM VM.
+  """,
+
+  the_gap: """
+    What if you want:
+    - A Python script to send tasks?
+    - A web dashboard to monitor agents?
+    - Another server to discover your agent's capabilities?
+
+    What would you need to build?
+  """,
+
+  without_phoenix: """
+    Without Phoenix, you'd need to build manually:
+    - [ ] HTTP server (Cowboy? Bandit?)
+    - [ ] Request parsing (URL, headers, body)
+    - [ ] Response encoding (JSON, status codes)
+    - [ ] Routing (which URL maps to which function?)
+    - [ ] Error handling (what if request is malformed?)
+    - [ ] Connection management (timeouts, keep-alive)
+
+    This is a LOT of boilerplate for something so common!
+  """
+}
+```
+
+### The Pattern You've Seen Before
+
+Think about the progression:
+
+```
+Phase 2: Manual process management → Phase 3: OTP GenServer/Supervisor
+         (100s of lines of code)         (10s of lines of code)
+
+Phase 3: Manual HTTP server ???   → Phase 4: Phoenix
+         (100s of lines of code)         (10s of lines of code)
+```
+
+**Phoenix is to HTTP what OTP is to processes.**
+
+It takes common patterns that everyone implements and provides a battle-tested framework.
+
+### What Phoenix Provides
+
+```elixir
+phoenix_features = %{
+  endpoint: "Entry point for all HTTP requests",
+  router: "Maps URLs to controller actions",
+  controllers: "Handle requests and produce responses",
+  pipelines: "Middleware chains (authentication, JSON parsing, etc.)",
+  channels: "WebSocket support for real-time features",
+  pubsub: "Distributed message broadcasting",
+  telemetry: "Built-in metrics and observability"
+}
+
+# Key insight: Phoenix is an OTP application!
+# It runs as part of your supervision tree.
+```
+
+---
+
+## Section 2: Phoenix Architecture
+
+### Where Phoenix Fits
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Your Application                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────────┐         ┌──────────────────┐                  │
+│  │   Phoenix Layer  │ ←HTTP→  │   External       │                  │
+│  │   (agent_api)    │         │   Clients        │                  │
+│  └────────┬─────────┘         └──────────────────┘                  │
+│           │                                                          │
+│           │ Elixir function calls                                    │
+│           ▼                                                          │
+│  ┌──────────────────┐                                               │
+│  │   OTP Layer      │                                               │
+│  │ (agent_framework)│                                               │
+│  │                  │                                               │
+│  │  ┌─────────────┐ │                                               │
+│  │  │AgentServer  │ │                                               │
+│  │  │AgentServer  │ │                                               │
+│  │  │AgentServer  │ │                                               │
+│  │  └─────────────┘ │                                               │
+│  └──────────────────┘                                               │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 🤔 Understanding the Layers
+
+```elixir
+# Consider this request flow:
+
+# 1. External client makes HTTP request:
+#    POST /a2a
+#    {"method": "SendMessage", "params": {"agent": "Worker-1", "action": "search"}}
+
+# 2. Phoenix receives the request in the Endpoint
+
+# 3. Router matches URL to controller
+
+# 4. Controller parses JSON, calls AgentFramework functions
+
+# 5. AgentServer receives Elixir message, processes task
+
+# 6. Controller formats response as JSON
+
+# 7. Phoenix sends HTTP response
+
+# Question: At which layer does the "translation" happen?
+translation_layer = """
+Your answer: ???
+
+Hint: Which layer converts HTTP concepts to Elixir concepts?
+"""
+
+# Answer: The Controller layer
+# Controllers are the bridge between HTTP (external) and OTP (internal)
+```
+
+---
+
+## Section 3: Project Structure
+
+### API-Only Phoenix Project
+
+For A2A protocol support, we don't need HTML views, JavaScript assets, or a database.
+We create an API-only project:
+
+```bash
+# This is what we'd run to create a new project:
+# mix phx.new agent_api --no-html --no-assets --no-ecto
+
+# Flags explained:
+# --no-html   → No HTML templates or view helpers
+# --no-assets → No JavaScript bundling (esbuild, tailwind)
+# --no-ecto   → No database layer (we use agent_framework's state)
+```
+
+### Directory Structure
+
+```
+agent_api/
+├── lib/
+│   ├── agent_api/               # Business logic (domain)
+│   │   ├── application.ex       # OTP Application
+│   │   └── a2a/                 # A2A protocol modules
+│   │       ├── agent_card.ex    # Agent Card data
+│   │       ├── json_rpc.ex      # JSON-RPC parsing
+│   │       └── task_manager.ex  # Bridge to AgentFramework
+│   │
+│   └── agent_api_web/           # Web layer
+│       ├── endpoint.ex          # HTTP entry point
+│       ├── router.ex            # URL → Controller mapping
+│       └── controllers/         # Request handlers
+│           ├── agent_card_controller.ex
+│           └── a2a_controller.ex
+│
+├── config/                      # Configuration files
+│   ├── config.exs              # Base config
+│   ├── dev.exs                 # Development overrides
+│   ├── prod.exs                # Production overrides
+│   └── test.exs                # Test overrides
+│
+├── test/                        # Tests
+└── mix.exs                      # Project definition
+```
+
+### 🤔 Why Two Directories?
+
+```elixir
+# Notice: lib/agent_api/ and lib/agent_api_web/
+
+# Question: Why separate these?
+
+separation_question = """
+lib/agent_api/     → Contains: ???
+lib/agent_api_web/ → Contains: ???
+
+Why not put everything in one directory?
+"""
+
+# Answer:
+# lib/agent_api/     → Business logic that could work without HTTP
+#                      (Agent Card data, JSON-RPC parsing, task management)
+#
+# lib/agent_api_web/ → Web-specific code (HTTP handling)
+#                      (Endpoint, Router, Controllers)
+#
+# This separation means:
+# - You could test business logic without starting a web server
+# - You could reuse business logic in a CLI tool
+# - Clear boundaries make code easier to navigate
+```
+
+---
+
+## Section 4: The Endpoint
+
+The Endpoint is the entry point for ALL HTTP requests.
+
+### What the Endpoint Does
+
+```elixir
+# lib/agent_api_web/endpoint.ex
+
+defmodule AgentApiWeb.Endpoint do
+  use Phoenix.Endpoint, otp_app: :agent_api
+
+  # Each plug processes the request in order:
+
+  plug Plug.RequestId          # Add unique request ID
+  plug Plug.Telemetry          # Emit telemetry events
+  plug Plug.Parsers,           # Parse request body
+    parsers: [:urlencoded, :json],
+    json_decoder: Jason
+  plug Plug.MethodOverride     # Support _method param
+  plug Plug.Head               # Convert HEAD to GET
+  plug Plug.Session            # Session management
+  plug AgentApiWeb.Router      # Route to controllers
+end
+```
+
+### 🤔 Endpoint as Supervisor
+
+```elixir
+# Here's something interesting:
+# The Endpoint is itself a Supervisor!
+
+# When you start Phoenix, the supervision tree looks like:
+
+# YourApp.Supervisor
+#      │
+#      ├── Phoenix.PubSub
+#      │
+#      └── AgentApiWeb.Endpoint  ← This is a Supervisor!
+#                │
+#                ├── HTTP Server (Cowboy/Bandit)
+#                ├── Code Reloader (dev only)
+#                └── Long-poll transport (for channels)
+
+# Question: Why would the Endpoint need to supervise children?
+
+endpoint_children = """
+Your answer: ???
+
+Hint: What might need to run independently of request handling?
+"""
+
+# Answer:
+# - HTTP server needs to accept connections continuously
+# - Code reloader watches files and triggers recompilation
+# - WebSocket processes need supervision for fault tolerance
+```
+
+---
+
+## Section 5: The Application Module
+
+### Starting Phoenix
+
+```elixir
+# lib/agent_api/application.ex
+
+defmodule AgentApi.Application do
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    children = [
+      # Start PubSub for message broadcasting
+      {Phoenix.PubSub, name: AgentApi.PubSub},
+
+      # Start the Endpoint (HTTP server)
+      AgentApiWeb.Endpoint
+
+      # Note: AgentFramework's supervisor starts automatically
+      # because agent_framework is a dependency
+    ]
+
+    opts = [strategy: :one_for_one, name: AgentApi.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
+end
+```
+
+### 🤔 Two Applications Working Together
+
+```elixir
+# When you run `iex -S mix phx.server`, two OTP applications start:
+
+# 1. agent_framework (dependency)
+#    └── AgentFramework.Supervisor
+#        ├── Registry
+#        └── AgentSupervisor (DynamicSupervisor)
+
+# 2. agent_api (main app)
+#    └── AgentApi.Supervisor
+#        ├── Phoenix.PubSub
+#        └── AgentApiWeb.Endpoint
+#            └── HTTP Server
+
+# Question: How can AgentApi.A2AController call AgentFramework functions?
+
+cross_app_calls = """
+Your answer: ???
+
+Hint: Are they in the same BEAM VM?
+"""
+
+# Answer:
+# They're in the SAME BEAM VM!
+# OTP applications are just organizational units.
+# Any module can call any other module's public functions.
+#
+# AgentApi.A2AController can simply:
+#   AgentFramework.AgentSupervisor.start_agent("Worker-1")
+```
+
+---
+
+## Section 6: Interactive Exploration
+
+### Exercise 1: Examine the Supervision Tree
+
+When Phoenix starts, explore what's running:
+
+```elixir
+# In IEx with your Phoenix app running:
+
+# See all running applications
+Application.started_applications()
+
+# See the agent_api supervision tree
+Supervisor.which_children(AgentApi.Supervisor)
+
+# See the agent_framework supervision tree
+Supervisor.which_children(AgentFramework.Supervisor)
+
+# Check the Endpoint's children
+# (The Endpoint is itself a supervisor)
+```
+
+### Exercise 2: Trace the Request Path
+
+```elixir
+# Think through this request:
+# curl http://localhost:4000/.well-known/agent.json
+
+request_path = """
+1. HTTP request arrives at: ???
+2. Parsed by plugs in: ???
+3. Routed to: ???
+4. Controller function: ???
+5. Returns: ???
+"""
+
+# Answer:
+# 1. AgentApiWeb.Endpoint (HTTP server)
+# 2. AgentApiWeb.Endpoint (plug pipeline)
+# 3. AgentApiWeb.Router (matches GET /.well-known/agent.json)
+# 4. AgentCardController.show/2
+# 5. JSON with Agent Card data
+```
+
+### Exercise 3: Understand the Connection
+
+```elixir
+# In Phoenix, the `conn` struct carries all request/response data.
+
+# Question: What's in a conn?
+
+conn_contents = %{
+  request_data: [
+    # ???
+  ],
+  response_data: [
+    # ???
+  ],
+  metadata: [
+    # ???
+  ]
+}
+
+# Answer:
+conn_contents = %{
+  request_data: [
+    :method,      # "GET", "POST", etc.
+    :path_info,   # ["a2a"]
+    :query_params,
+    :body_params,
+    :headers
+  ],
+  response_data: [
+    :status,      # 200, 404, etc.
+    :resp_body,
+    :resp_headers
+  ],
+  metadata: [
+    :assigns,     # Your custom data
+    :private,     # Phoenix internal data
+    :host,
+    :port,
+    :scheme
+  ]
+}
+```
+
+---
+
+## Section 7: Configuration
+
+### Environment-Specific Config
+
+```elixir
+# config/config.exs - Base configuration
+config :agent_api, AgentApiWeb.Endpoint,
+  url: [host: "localhost"],
+  render_errors: [formats: [json: AgentApiWeb.ErrorJSON]]
+
+# config/dev.exs - Development overrides
+config :agent_api, AgentApiWeb.Endpoint,
+  http: [port: 4000],
+  debug_errors: true,
+  code_reloader: true
+
+# config/prod.exs - Production settings
+config :agent_api, AgentApiWeb.Endpoint,
+  url: [host: "example.com", port: 443]
+
+# config/runtime.exs - Runtime configuration (uses env vars)
+config :agent_api, AgentApiWeb.Endpoint,
+  secret_key_base: System.get_env("SECRET_KEY_BASE")
+```
+
+### 🤔 Configuration Hierarchy
+
+```elixir
+# Question: If you set a value in config.exs and a different value
+#           in dev.exs, which one "wins" in development?
+
+config_question = """
+# config/config.exs
+config :agent_api, :port, 4000
+
+# config/dev.exs
+config :agent_api, :port, 4001
+
+# In development, Application.get_env(:agent_api, :port) returns: ???
+"""
+
+# Answer: 4001
+# Later config files override earlier ones.
+# Order: config.exs → dev.exs/prod.exs/test.exs → runtime.exs
+```
+
+---
+
+## Key Takeaways
+
+1. **Phoenix is to HTTP what OTP is to processes** - It wraps common patterns in a battle-tested framework
+
+2. **Phoenix is an OTP application** - It runs as part of your supervision tree, not outside it
+
+3. **Two-directory structure separates concerns** - `lib/app/` for business logic, `lib/app_web/` for HTTP
+
+4. **Endpoint is the entry point** - All requests flow through the plug pipeline
+
+5. **Cross-application calls work** - Multiple OTP apps in one BEAM can call each other's functions
+
+6. **Configuration is layered** - Base config + environment overrides + runtime config
+
+---
+
+## What's Next?
+
+In the next session, we'll explore **Request Lifecycle and Routing**:
+
+* How a request flows from Endpoint → Router → Controller
+* Defining routes for A2A endpoints
+* Understanding pipelines and plugs
+* Path parameters and pattern matching
+
+You'll see how Phoenix routing is similar to GenServer message pattern matching!
+
+---
+
+## Navigation
+
+← [Previous: Session 16 - Checkpoint OTP Agents](16_checkpoint_otp_agents.livemd)
+
+→ [Next: Session 18 - Request Lifecycle and Routing](18_request_lifecycle_routing.livemd)
