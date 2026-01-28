@@ -60,9 +60,42 @@ AgentFramework.otp_send_task(agent, :search, %{query: "OTP"})
 
 ## Running Livebook Notebooks
 
-1. Install [Livebook](https://livebook.dev/)
-2. Open any `.livemd` file from the `notebooks/` directory
-3. Follow the interactive exercises
+### First-time Setup
+
+Install Livebook as an escript:
+
+```bash
+mix escript.install hex livebook
+```
+
+### Starting Livebook
+
+```bash
+# Start Livebook with notebooks as home directory
+~/.mix/escripts/livebook server --home /path/to/learning-erlang-otp/notebooks
+```
+
+This will output a URL with an access token, e.g.:
+```
+[Livebook] Application running at http://localhost:8080/?token=abc123...
+```
+
+Open that URL in your browser to access the notebooks.
+
+### Quick Start (copy/paste)
+
+```bash
+# From the repo root
+~/.mix/escripts/livebook server --home $(pwd)/notebooks
+```
+
+### Notebooks Overview
+
+| Phase | Notebooks | Topics |
+|-------|-----------|--------|
+| 1 | 01-06 | Core Elixir: basics, pattern matching, functions, modules |
+| 2 | 07-11 | Concurrency: processes, links, monitors, fault tolerance |
+| 3 | 12-16 | OTP: GenServer, Supervisor, Application, Distribution |
 
 ## Learning Resources
 
