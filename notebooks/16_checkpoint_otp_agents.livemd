@@ -7,11 +7,12 @@ Mix.install([])
 ## Introduction
 
 Congratulations! You've learned all the core OTP concepts:
-- **GenServer** - Process state and message handling
-- **Supervisor** - Fault tolerance and restarts
-- **DynamicSupervisor** - Runtime child management
-- **Application** - Lifecycle and supervision tree startup
-- **Distribution** - Multi-node communication
+
+* **GenServer** - Process state and message handling
+* **Supervisor** - Fault tolerance and restarts
+* **DynamicSupervisor** - Runtime child management
+* **Application** - Lifecycle and supervision tree startup
+* **Distribution** - Multi-node communication
 
 Now it's time to put it all together by refactoring your Phase 2
 `agent_framework` to use OTP properly.
@@ -20,17 +21,18 @@ Now it's time to put it all together by refactoring your Phase 2
 
 Convert the manually-implemented Phase 2 code to OTP:
 
-| Phase 2 (Manual) | Phase 3 (OTP) |
-|------------------|---------------|
-| `ProcessAgent` | `AgentServer` (GenServer) |
-| `AgentMonitor` | `AgentSupervisor` (DynamicSupervisor) |
-| Manual startup | `Application` module |
+| Phase 2 (Manual) | Phase 3 (OTP)                         |
+| ---------------- | ------------------------------------- |
+| `ProcessAgent`   | `AgentServer` (GenServer)             |
+| `AgentMonitor`   | `AgentSupervisor` (DynamicSupervisor) |
+| Manual startup   | `Application` module                  |
 
 The end result will have the same functionality with:
-- ~80% less supervision code
-- Built-in debugging tools
-- Automatic application startup
-- Production-ready patterns
+
+* ~80% less supervision code
+* Built-in debugging tools
+* Automatic application startup
+* Production-ready patterns
 
 ---
 
@@ -88,6 +90,7 @@ Create a new file: `lib/agent_framework/agent_server.ex`
 ### Specification
 
 The `AgentServer` module should:
+
 1. Be a GenServer that maintains agent state
 2. Support all the operations from `ProcessAgent`
 3. Use proper OTP patterns
@@ -95,22 +98,24 @@ The `AgentServer` module should:
 ### Required Functions
 
 **Client API:**
-- `start_link(name, opts \\ [])` - Start a supervised agent
-- `get_state(server)` - Get full agent state
-- `get_status(server)` - Get just the status
-- `remember(server, key, value)` - Store in memory (async)
-- `recall(server, key)` - Retrieve from memory (sync)
-- `forget_all(server)` - Clear memory (async)
-- `send_task(server, action, params)` - Queue a task (async)
-- `process_next(server)` - Process next task (sync)
-- `inbox_count(server)` - Get inbox size (sync)
+
+* `start_link(name, opts \\ [])` - Start a supervised agent
+* `get_state(server)` - Get full agent state
+* `get_status(server)` - Get just the status
+* `remember(server, key, value)` - Store in memory (async)
+* `recall(server, key)` - Retrieve from memory (sync)
+* `forget_all(server)` - Clear memory (async)
+* `send_task(server, action, params)` - Queue a task (async)
+* `process_next(server)` - Process next task (sync)
+* `inbox_count(server)` - Get inbox size (sync)
 
 **Server Callbacks:**
-- `init/1` - Initialize state
-- `handle_call/3` - Sync operations
-- `handle_cast/2` - Async operations
-- `handle_info/2` - System messages
-- `terminate/2` - Cleanup
+
+* `init/1` - Initialize state
+* `handle_call/3` - Sync operations
+* `handle_cast/2` - Async operations
+* `handle_info/2` - System messages
+* `terminate/2` - Cleanup
 
 ### Template
 
@@ -284,17 +289,18 @@ Create a new file: `lib/agent_framework/agent_supervisor.ex`
 ### Specification
 
 The `AgentSupervisor` module should:
+
 1. Be a DynamicSupervisor for dynamic agent management
 2. Allow starting/stopping agents at runtime
 3. Automatically restart crashed agents
 
 ### Required Functions
 
-- `start_link(opts)` - Start the supervisor
-- `start_agent(name, opts \\ [])` - Start a supervised agent
-- `stop_agent(pid)` - Stop an agent
-- `list_agents()` - List all supervised agents
-- `count_agents()` - Count supervised agents
+* `start_link(opts)` - Start the supervisor
+* `start_agent(name, opts \\ [])` - Start a supervised agent
+* `stop_agent(pid)` - Stop an agent
+* `list_agents()` - List all supervised agents
+* `count_agents()` - Count supervised agents
 
 ### Template
 
@@ -433,6 +439,7 @@ Create a new file: `lib/agent_framework/application.ex`
 ### Specification
 
 The `Application` module should:
+
 1. Define the supervision tree root
 2. Start Registry and AgentSupervisor
 3. Be referenced in `mix.exs`
@@ -789,14 +796,14 @@ Navigate to Applications → agent_framework to see your supervision tree.
 
 Before moving to Phase 4, verify:
 
-- [ ] `AgentServer` is a working GenServer with all callbacks
-- [ ] `AgentSupervisor` is a DynamicSupervisor that manages agents
-- [ ] `Application` module starts the supervision tree
-- [ ] `mix.exs` references the Application module
-- [ ] All tests pass with `mix test`
-- [ ] `iex -S mix` shows supervision tree running
-- [ ] Crashing an agent triggers automatic restart
-- [ ] `list_agents()` and `count_agents()` work correctly
+* [ ] `AgentServer` is a working GenServer with all callbacks
+* [ ] `AgentSupervisor` is a DynamicSupervisor that manages agents
+* [ ] `Application` module starts the supervision tree
+* [ ] `mix.exs` references the Application module
+* [ ] All tests pass with `mix test`
+* [ ] `iex -S mix` shows supervision tree running
+* [ ] Crashing an agent triggers automatic restart
+* [ ] `list_agents()` and `count_agents()` work correctly
 
 ---
 
@@ -817,10 +824,10 @@ You've now experienced the power of OTP:
 
 Phase 4 will add **Phoenix** for HTTP/API support:
 
-- A2A protocol endpoints
-- JSON-RPC handling
-- WebSocket channels for real-time
-- Phoenix.PubSub for distributed agents
+* A2A protocol endpoints
+* JSON-RPC handling
+* WebSocket channels for real-time
+* Phoenix.PubSub for distributed agents
 
 Your OTP foundation is ready for the web layer!
 

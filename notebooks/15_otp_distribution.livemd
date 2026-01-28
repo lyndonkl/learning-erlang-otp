@@ -16,17 +16,19 @@ session introduces you to distributed Erlang/Elixir.
 ### Sources for This Session
 
 This session synthesizes concepts from:
-- [Elixir School - OTP Distribution](https://elixirschool.com/en/lessons/advanced/otp_distribution)
-- [Learn You Some Erlang - Distribunomicon](https://learnyousomeerlang.com/distribunomicon)
+
+* [Elixir School - OTP Distribution](https://elixirschool.com/en/lessons/advanced/otp_distribution)
+* [Learn You Some Erlang - Distribunomicon](https://learnyousomeerlang.com/distribunomicon)
 
 ## Learning Goals
 
 By the end of this session, you'll understand:
-- How to name and connect BEAM nodes
-- Send messages between nodes
-- Make distributed GenServer calls
-- The concept of location transparency
-- When to use distribution vs other approaches
+
+* How to name and connect BEAM nodes
+* Send messages between nodes
+* Make distributed GenServer calls
+* The concept of location transparency
+* When to use distribution vs other approaches
 
 **Note**: This session is marked as optional because you may not need
 distribution immediately. However, understanding it helps you appreciate
@@ -265,6 +267,7 @@ calls = [
 ## Section 4: Distributed GenServer
 
 From Elixir School:
+
 > For supervised, production-ready distributed computing, use
 > `Task.Supervisor.async/5`. This approach supervises tasks across nodes.
 
@@ -625,10 +628,11 @@ design_questions = %{
 ## What's Next?
 
 In the next session, we'll complete Phase 3 with the **Checkpoint Project**:
-- Implement AgentServer (GenServer)
-- Implement AgentSupervisor (DynamicSupervisor)
-- Create Application module
-- Run tests and verify everything works
+
+* Implement AgentServer (GenServer)
+* Implement AgentSupervisor (DynamicSupervisor)
+* Create Application module
+* Run tests and verify everything works
 
 After that, Phase 4 will add Phoenix for HTTP/API support, which makes
 distributed agents even easier with Phoenix.PubSub!

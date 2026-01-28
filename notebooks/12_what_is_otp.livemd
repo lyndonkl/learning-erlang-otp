@@ -7,9 +7,10 @@ Mix.install([])
 ## Introduction
 
 Welcome to Phase 3! In Phase 2, you built a working agent framework with:
-- `ProcessAgent` - Agents as real processes with message loops
-- `AgentMonitor` - Manual supervision and restart logic
-- `AgentRegistry` - Name-based process lookup
+
+* `ProcessAgent` - Agents as real processes with message loops
+* `AgentMonitor` - Manual supervision and restart logic
+* `AgentRegistry` - Name-based process lookup
 
 Here's the exciting revelation: **You've already been doing OTP!**
 
@@ -21,17 +22,19 @@ production-ready behaviours.
 ### Sources for This Session
 
 This session synthesizes concepts from:
-- [Elixir School - OTP Concurrency](https://elixirschool.com/en/lessons/advanced/otp_concurrency)
-- [Learn You Some Erlang - What is OTP?](https://learnyousomeerlang.com/what-is-otp)
-- [Learn You Some Erlang - Clients and Servers](https://learnyousomeerlang.com/clients-and-servers)
+
+* [Elixir School - OTP Concurrency](https://elixirschool.com/en/lessons/advanced/otp_concurrency)
+* [Learn You Some Erlang - What is OTP?](https://learnyousomeerlang.com/what-is-otp)
+* [Learn You Some Erlang - Clients and Servers](https://learnyousomeerlang.com/clients-and-servers)
 
 ## Learning Goals
 
 By the end of this session, you'll understand:
-- What OTP is and why it exists
-- How your Phase 2 code maps to OTP behaviours
-- The OTP behaviour system (contracts/callbacks)
-- The structure of supervision trees
+
+* What OTP is and why it exists
+* How your Phase 2 code maps to OTP behaviours
+* The OTP behaviour system (contracts/callbacks)
+* The structure of supervision trees
 
 ---
 
@@ -68,10 +71,11 @@ that much about telecom anymore" but rather applies principles developed for
 telecom-grade reliability to general software engineering.
 
 The original requirements were:
-- **High availability** - Systems must stay up
-- **Fault tolerance** - Failures must be isolated and recovered
-- **Hot code upgrades** - Update code without stopping the system
-- **Concurrent connections** - Handle millions of simultaneous calls
+
+* **High availability** - Systems must stay up
+* **Fault tolerance** - Failures must be isolated and recovered
+* **Hot code upgrades** - Update code without stopping the system
+* **Concurrent connections** - Handle millions of simultaneous calls
 
 These requirements led to a philosophy:
 
@@ -86,8 +90,9 @@ Here's the central insight from Learn You Some Erlang that makes OTP so powerful
 > libraries, developers focus exclusively on application-specific logic.
 
 **Think about it**: In your `ProcessAgent.loop/1`, how much code is:
-- Generic (receive loop, state threading, stopping) vs.
-- Specific (handling `:search`, `:remember`, etc.)?
+
+* Generic (receive loop, state threading, stopping) vs.
+* Specific (handling `:search`, `:remember`, etc.)?
 
 OTP separates these concerns completely.
 
@@ -121,13 +126,13 @@ single OTP backend, every process using it benefits automatically.
 
 Let's map your Phase 2 code to OTP concepts:
 
-| Your Phase 2 Code | OTP Equivalent | What It Does |
-|-------------------|----------------|--------------|
-| `ProcessAgent.loop/1` | `GenServer` | Process with state + message handling |
-| `send(pid, msg); receive do...` | `GenServer.call/cast` | Synchronous/async messaging |
-| `AgentMonitor.loop/1` | `Supervisor` | Monitors children, restarts on crash |
-| `Process.monitor + restart logic` | Supervisor child specs | Restart policies |
-| `AgentRegistry` | `Registry` | Already OTP! |
+| Your Phase 2 Code                 | OTP Equivalent         | What It Does                          |
+| --------------------------------- | ---------------------- | ------------------------------------- |
+| `ProcessAgent.loop/1`             | `GenServer`            | Process with state + message handling |
+| `send(pid, msg); receive do...`   | `GenServer.call/cast`  | Synchronous/async messaging           |
+| `AgentMonitor.loop/1`             | `Supervisor`           | Monitors children, restarts on crash  |
+| `Process.monitor + restart logic` | Supervisor child specs | Restart policies                      |
+| `AgentRegistry`                   | `Registry`             | Already OTP!                          |
 
 ### Your ProcessAgent Loop vs GenServer
 
@@ -187,11 +192,12 @@ missing_from_genserver = [
 ```
 
 **GenServer handles:**
-- The receive loop for you
-- Process registration
-- Timeout handling
-- Debugging/tracing support
-- Hot code upgrades
+
+* The receive loop for you
+* Process registration
+* Timeout handling
+* Debugging/tracing support
+* Hot code upgrades
 
 ### Your AgentMonitor vs Supervisor
 
@@ -255,6 +261,7 @@ A **behaviour** in OTP is a contract - a set of callbacks that your module
 must implement. Think of it like an interface in other languages.
 
 From Learn You Some Erlang:
+
 > The framework "takes care of" repetitive implementation details "by grouping
 > these essential practices into a set of libraries that have been carefully
 > engineered and battle-hardened over years."
@@ -285,14 +292,14 @@ From Learn You Some Erlang:
 
 GenServer requires six callbacks forming a complete lifecycle:
 
-| Callback | Purpose |
-|----------|---------|
-| `init/1` | Initialize state when process starts |
+| Callback        | Purpose                                          |
+| --------------- | ------------------------------------------------ |
+| `init/1`        | Initialize state when process starts             |
 | `handle_call/3` | Synchronous requests (caller waits for response) |
-| `handle_cast/2` | Asynchronous messages (fire and forget) |
-| `handle_info/2` | Non-GenServer messages (monitors, timers, etc.) |
-| `terminate/2` | Cleanup when stopping |
-| `code_change/3` | Hot code upgrade support |
+| `handle_cast/2` | Asynchronous messages (fire and forget)          |
+| `handle_info/2` | Non-GenServer messages (monitors, timers, etc.)  |
+| `terminate/2`   | Cleanup when stopping                            |
+| `code_change/3` | Hot code upgrade support                         |
 
 ### 🤔 Mapping Callbacks to Your Code
 
@@ -399,10 +406,10 @@ From Learn You Some Erlang on supervision trees:
 
 ### Restart Strategies Preview
 
-| Strategy | Behavior |
-|----------|----------|
-| `:one_for_one` | Only restart the crashed child |
-| `:one_for_all` | Restart ALL children if one crashes |
+| Strategy        | Behavior                                     |
+| --------------- | -------------------------------------------- |
+| `:one_for_one`  | Only restart the crashed child               |
+| `:one_for_all`  | Restart ALL children if one crashes          |
 | `:rest_for_one` | Restart crashed child + all started after it |
 
 ### 🤔 Choosing Strategies
@@ -565,9 +572,10 @@ return_tuples = %{
 ### The @impl Annotation
 
 Notice the `@impl true` above each callback. This tells the compiler:
-- "This function implements a behaviour callback"
-- Catches typos in callback names
-- Documents which functions are callbacks
+
+* "This function implements a behaviour callback"
+* Catches typos in callback names
+* Documents which functions are callbacks
 
 ```elixir
 # What happens if you typo a callback name?
@@ -589,13 +597,13 @@ end
 
 ### What You'll Gain
 
-| Without OTP (Phase 2) | With OTP (Phase 3) |
-|----------------------|-------------------|
-| ~400 lines of supervision logic | ~50 lines with Supervisor |
-| Manual message loop | Automatic with GenServer |
-| Custom restart logic | Built-in restart strategies |
-| No debugging tools | OTP observer, tracing |
-| No hot code reload | Supported automatically |
+| Without OTP (Phase 2)           | With OTP (Phase 3)          |
+| ------------------------------- | --------------------------- |
+| ~400 lines of supervision logic | ~50 lines with Supervisor   |
+| Manual message loop             | Automatic with GenServer    |
+| Custom restart logic            | Built-in restart strategies |
+| No debugging tools              | OTP observer, tracing       |
+| No hot code reload              | Supported automatically     |
 
 ### 🤔 Final Reflection
 
@@ -666,9 +674,10 @@ genserver_provides = [
 ### Exercise 3: Supervision Tree Design
 
 Design a supervision tree for an agent framework with:
-- 3 permanent worker agents
-- A dynamic pool of temporary agents
-- A shared state store
+
+* 3 permanent worker agents
+* A dynamic pool of temporary agents
+* A shared state store
 
 Draw it as ASCII art:
 
@@ -698,10 +707,11 @@ supervision_tree = """
 ## What's Next?
 
 In the next session, we'll dive deep into **GenServer**:
-- The full callback contract
-- Converting ProcessAgent to AgentServer
-- Synchronous (call) vs asynchronous (cast) patterns
-- Handling system messages with handle_info
+
+* The full callback contract
+* Converting ProcessAgent to AgentServer
+* Synchronous (call) vs asynchronous (cast) patterns
+* Handling system messages with handle_info
 
 You'll transform your manual process loop into a proper OTP GenServer!
 

@@ -16,17 +16,19 @@ OTP Supervisor does all that in about 10-20 lines.
 ### Sources for This Session
 
 This session synthesizes concepts from:
-- [Elixir School - OTP Supervisors](https://elixirschool.com/en/lessons/advanced/otp_supervisors)
-- [Learn You Some Erlang - Who Supervises The Supervisors?](https://learnyousomeerlang.com/supervisors)
+
+* [Elixir School - OTP Supervisors](https://elixirschool.com/en/lessons/advanced/otp_supervisors)
+* [Learn You Some Erlang - Who Supervises The Supervisors?](https://learnyousomeerlang.com/supervisors)
 
 ## Learning Goals
 
 By the end of this session, you'll be able to:
-- Create Supervisors with child specifications
-- Choose the right restart strategy for your use case
-- Use DynamicSupervisor for runtime children
-- Build supervision trees
-- Convert AgentMonitor to AgentSupervisor
+
+* Create Supervisors with child specifications
+* Choose the right restart strategy for your use case
+* Use DynamicSupervisor for runtime children
+* Build supervision trees
+* Convert AgentMonitor to AgentSupervisor
 
 ---
 
@@ -277,6 +279,7 @@ Every child needs a **specification** telling the supervisor how to start and ma
 ### The Full Child Spec
 
 From Learn You Some Erlang:
+
 > Each child requires: ChildId, StartFunc, Restart type, Shutdown timeout,
 > Type (worker/supervisor), and Modules list.
 
@@ -477,11 +480,11 @@ Regular Supervisor starts children at boot. **DynamicSupervisor** starts them at
 
 ### When to Use DynamicSupervisor
 
-| Supervisor | DynamicSupervisor |
-|------------|-------------------|
-| Children known at compile time | Children created at runtime |
-| Fixed set of workers | Variable number of workers |
-| One child spec per child | One child spec, many instances |
+| Supervisor                     | DynamicSupervisor              |
+| ------------------------------ | ------------------------------ |
+| Children known at compile time | Children created at runtime    |
+| Fixed set of workers           | Variable number of workers     |
+| One child spec per child       | One child spec, many instances |
 
 ### Basic DynamicSupervisor
 
@@ -877,10 +880,11 @@ end
 ## What's Next?
 
 In the next session, we'll explore **OTP Distribution**:
-- Connecting multiple BEAM nodes
-- Sending messages across nodes
-- Location-transparent GenServer calls
-- Distributed agent systems
+
+* Connecting multiple BEAM nodes
+* Sending messages across nodes
+* Location-transparent GenServer calls
+* Distributed agent systems
 
 You'll see how easy it is to scale your agents across multiple machines!
 

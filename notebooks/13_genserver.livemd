@@ -16,17 +16,19 @@ generic server logic from your application-specific behavior.
 ### Sources for This Session
 
 This session synthesizes concepts from:
-- [Elixir School - OTP Concurrency](https://elixirschool.com/en/lessons/advanced/otp_concurrency)
-- [Learn You Some Erlang - Clients and Servers](https://learnyousomeerlang.com/clients-and-servers)
+
+* [Elixir School - OTP Concurrency](https://elixirschool.com/en/lessons/advanced/otp_concurrency)
+* [Learn You Some Erlang - Clients and Servers](https://learnyousomeerlang.com/clients-and-servers)
 
 ## Learning Goals
 
 By the end of this session, you'll be able to:
-- Implement all GenServer callbacks correctly
-- Convert your ProcessAgent to a GenServer
-- Choose between synchronous (call) and asynchronous (cast) patterns
-- Handle system messages with handle_info
-- Understand GenServer state management
+
+* Implement all GenServer callbacks correctly
+* Convert your ProcessAgent to a GenServer
+* Choose between synchronous (call) and asynchronous (cast) patterns
+* Handle system messages with handle_info
+* Understand GenServer state management
 
 ---
 
@@ -128,14 +130,14 @@ IO.inspect(GenServer.behaviour_info(:optional_callbacks))
 
 ### The Complete Callback Set
 
-| Callback | When Called | Must Return |
-|----------|-------------|-------------|
-| `init/1` | Process starts | `{:ok, state}` or `{:stop, reason}` |
-| `handle_call/3` | Sync request arrives | `{:reply, response, state}` |
-| `handle_cast/2` | Async message arrives | `{:noreply, state}` |
-| `handle_info/2` | Other message arrives | `{:noreply, state}` |
-| `terminate/2` | Process stopping | Any (ignored) |
-| `code_change/3` | Hot code upgrade | `{:ok, new_state}` |
+| Callback        | When Called           | Must Return                         |
+| --------------- | --------------------- | ----------------------------------- |
+| `init/1`        | Process starts        | `{:ok, state}` or `{:stop, reason}` |
+| `handle_call/3` | Sync request arrives  | `{:reply, response, state}`         |
+| `handle_cast/2` | Async message arrives | `{:noreply, state}`                 |
+| `handle_info/2` | Other message arrives | `{:noreply, state}`                 |
+| `terminate/2`   | Process stopping      | Any (ignored)                       |
+| `code_change/3` | Hot code upgrade      | `{:ok, new_state}`                  |
 
 ### 🤔 Why These Specific Callbacks?
 
@@ -225,6 +227,7 @@ init_returns = %{
 ### handle_call/3 - Synchronous Requests
 
 From Learn You Some Erlang:
+
 > Execution is blocked in the process that spawned the server while waiting
 > for confirmation from init.
 
@@ -412,6 +415,7 @@ handle_info_receives = [
 ### terminate/2 - Cleanup
 
 From Learn You Some Erlang:
+
 > Whatever was done in init/1 should have its opposite in terminate/2.
 
 ```elixir
@@ -903,10 +907,11 @@ AgentServer.get_state(agent)
 ## What's Next?
 
 In the next session, we'll explore **Supervisors**:
-- Restart strategies (one_for_one, one_for_all, rest_for_one)
-- DynamicSupervisor for runtime children
-- Child specifications
-- Converting AgentMonitor to AgentSupervisor
+
+* Restart strategies (one_for_one, one_for_all, rest_for_one)
+* DynamicSupervisor for runtime children
+* Child specifications
+* Converting AgentMonitor to AgentSupervisor
 
 You'll build a supervision tree that automatically restarts your agents!
 
