@@ -1,0 +1,714 @@
+# Session 12: What is OTP?
+
+```elixir
+Mix.install([])
+```
+
+## Introduction
+
+Welcome to Phase 3! In Phase 2, you built a working agent framework with:
+- `ProcessAgent` - Agents as real processes with message loops
+- `AgentMonitor` - Manual supervision and restart logic
+- `AgentRegistry` - Name-based process lookup
+
+Here's the exciting revelation: **You've already been doing OTP!**
+
+OTP (Open Telecom Platform) isn't something new to learn - it's the formalization
+of the exact patterns you implemented manually. The Erlang/Elixir community spent
+30+ years refining these patterns, and OTP packages them into battle-tested,
+production-ready behaviours.
+
+### Sources for This Session
+
+This session synthesizes concepts from:
+- [Elixir School - OTP Concurrency](https://elixirschool.com/en/lessons/advanced/otp_concurrency)
+- [Learn You Some Erlang - What is OTP?](https://learnyousomeerlang.com/what-is-otp)
+- [Learn You Some Erlang - Clients and Servers](https://learnyousomeerlang.com/clients-and-servers)
+
+## Learning Goals
+
+By the end of this session, you'll understand:
+- What OTP is and why it exists
+- How your Phase 2 code maps to OTP behaviours
+- The OTP behaviour system (contracts/callbacks)
+- The structure of supervision trees
+
+---
+
+## Section 1: The OTP Philosophy
+
+### 🤔 Reflection: Before We Begin
+
+Before reading further, think about your Phase 2 `AgentMonitor`:
+
+```elixir
+# Take a moment to answer these questions:
+reflection_questions = [
+  "How many lines of code did AgentMonitor require?",
+  "What percentage of that code is 'boilerplate' vs 'your specific restart logic'?",
+  "If you wanted to add a new restart strategy, how many places would you need to change?",
+  "How confident are you that your monitor handles all edge cases correctly?"
+]
+
+# Jot down your thoughts:
+your_reflections = """
+# Lines of code in AgentMonitor: ???
+# Boilerplate percentage: ???
+# Places to change for new strategy: ???
+# Edge case confidence (1-10): ???
+"""
+```
+
+### From Telecoms to Modern Web
+
+OTP was born at Ericsson in the 1980s-90s for building telephone switches that
+needed to run 24/7 with minimal downtime. The name "Open Telecom Platform" is
+now somewhat misleading - as the Learn You Some Erlang book notes, it's "not
+that much about telecom anymore" but rather applies principles developed for
+telecom-grade reliability to general software engineering.
+
+The original requirements were:
+- **High availability** - Systems must stay up
+- **Fault tolerance** - Failures must be isolated and recovered
+- **Hot code upgrades** - Update code without stopping the system
+- **Concurrent connections** - Handle millions of simultaneous calls
+
+These requirements led to a philosophy:
+
+> "Let it crash" + Supervision = Reliability
+
+### The Core Insight: Generic vs. Specific
+
+Here's the central insight from Learn You Some Erlang that makes OTP so powerful:
+
+> Every concurrent process follows predictable patterns—spawning, initialization,
+> looping, and termination. By extracting these generic components into reusable
+> libraries, developers focus exclusively on application-specific logic.
+
+**Think about it**: In your `ProcessAgent.loop/1`, how much code is:
+- Generic (receive loop, state threading, stopping) vs.
+- Specific (handling `:search`, `:remember`, etc.)?
+
+OTP separates these concerns completely.
+
+### 🤔 Socratic Question
+
+```elixir
+# Consider this scenario:
+# You have 10 different GenServer-based services in your application.
+# A bug is discovered in how timeouts are handled in receive loops.
+
+# With manual loops (Phase 2 approach):
+# - How many files would you need to fix?
+# - How would you ensure consistency across all 10?
+
+# With OTP GenServer:
+# - How many files would you need to fix?
+# - Who maintains that code?
+
+your_answer = """
+Manual approach: ???
+OTP approach: ???
+"""
+```
+
+The answer reveals why OTP matters: When someone optimizes or fixes a bug in the
+single OTP backend, every process using it benefits automatically.
+
+---
+
+## Section 2: What You Already Know
+
+Let's map your Phase 2 code to OTP concepts:
+
+| Your Phase 2 Code | OTP Equivalent | What It Does |
+|-------------------|----------------|--------------|
+| `ProcessAgent.loop/1` | `GenServer` | Process with state + message handling |
+| `send(pid, msg); receive do...` | `GenServer.call/cast` | Synchronous/async messaging |
+| `AgentMonitor.loop/1` | `Supervisor` | Monitors children, restarts on crash |
+| `Process.monitor + restart logic` | Supervisor child specs | Restart policies |
+| `AgentRegistry` | `Registry` | Already OTP! |
+
+### Your ProcessAgent Loop vs GenServer
+
+Here's your Phase 2 code:
+
+```elixir
+# Phase 2: Manual loop
+defp loop(state) do
+  receive do
+    {:get_state, from} ->
+      send(from, {:state, state})
+      loop(state)
+
+    {:remember, key, value} ->
+      new_memory = Map.put(state.memory, key, value)
+      loop(%{state | memory: new_memory})
+
+    :stop ->
+      :ok
+  end
+end
+```
+
+Here's the OTP equivalent:
+
+```elixir
+# Phase 3: GenServer
+def handle_call(:get_state, _from, state) do
+  {:reply, state, state}
+end
+
+def handle_cast({:remember, key, value}, state) do
+  {:noreply, %{state | memory: Map.put(state.memory, key, value)}}
+end
+
+def terminate(_reason, _state) do
+  :ok
+end
+```
+
+### 🤔 Spot the Differences
+
+```elixir
+# Look carefully at both versions above. What's MISSING from the GenServer version?
+# (Think about what you had to write manually that GenServer handles for you)
+
+missing_from_genserver = [
+  # 1. ???
+  # 2. ???
+  # 3. ???
+]
+
+# Reveal your answers then check below:
+# 1. The recursive `loop(state)` call - GenServer handles the loop automatically
+# 2. The `receive do` block - GenServer dispatches to your callbacks
+# 3. Managing the `from` reference for replies - GenServer tracks this for you
+```
+
+**GenServer handles:**
+- The receive loop for you
+- Process registration
+- Timeout handling
+- Debugging/tracing support
+- Hot code upgrades
+
+### Your AgentMonitor vs Supervisor
+
+Your Phase 2 monitor (~200 lines):
+
+```elixir
+defp loop(state) do
+  receive do
+    {:DOWN, ref, :process, pid, reason} ->
+      case should_restart?(state.restart_policy, reason) do
+        true ->
+          {:ok, new_pid, new_ref} = do_start_agent(name, opts)
+          loop(%{state | agents: Map.put(state.agents, name, new_info)})
+        false ->
+          loop(%{state | agents: Map.delete(state.agents, name)})
+      end
+  end
+end
+```
+
+OTP Supervisor (~10 lines):
+
+```elixir
+def init(_opts) do
+  children = [
+    {AgentServer, "Worker-1"},
+    {AgentServer, "Worker-2"}
+  ]
+  Supervisor.init(children, strategy: :one_for_one)
+end
+```
+
+### 🤔 Why This Matters
+
+```elixir
+# Think about the implications:
+# 1. You wrote ~200 lines for AgentMonitor
+# 2. OTP Supervisor does the same in ~10 lines
+# 3. OTP has been refined for 30+ years
+
+# Question: Which version likely handles more edge cases correctly?
+# Question: If you needed to support a new restart pattern, which would be easier to extend?
+
+# But here's the deeper question:
+# WHY did you need to write AgentMonitor in Phase 2?
+
+phase_2_purpose = """
+# Your answer: ???
+
+# Hint: What did writing it manually teach you about processes,
+# monitoring, and fault tolerance that you wouldn't have learned
+# by just using Supervisor from the start?
+"""
+```
+
+---
+
+## Section 3: OTP Behaviours Overview
+
+A **behaviour** in OTP is a contract - a set of callbacks that your module
+must implement. Think of it like an interface in other languages.
+
+From Learn You Some Erlang:
+> The framework "takes care of" repetitive implementation details "by grouping
+> these essential practices into a set of libraries that have been carefully
+> engineered and battle-hardened over years."
+
+### The Main Behaviours
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       Application                            │
+│  (Lifecycle management - start/stop your OTP app)           │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                       Supervisor                             │
+│  (Manages child processes, handles restarts)                │
+└─────────────────────────────────────────────────────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+        ┌──────────┐   ┌──────────┐   ┌──────────┐
+        │GenServer │   │GenServer │   │  Agent   │
+        │(complex) │   │(worker)  │   │(simple)  │
+        └──────────┘   └──────────┘   └──────────┘
+```
+
+### GenServer Callbacks (from Learn You Some Erlang)
+
+GenServer requires six callbacks forming a complete lifecycle:
+
+| Callback | Purpose |
+|----------|---------|
+| `init/1` | Initialize state when process starts |
+| `handle_call/3` | Synchronous requests (caller waits for response) |
+| `handle_cast/2` | Asynchronous messages (fire and forget) |
+| `handle_info/2` | Non-GenServer messages (monitors, timers, etc.) |
+| `terminate/2` | Cleanup when stopping |
+| `code_change/3` | Hot code upgrade support |
+
+### 🤔 Mapping Callbacks to Your Code
+
+```elixir
+# Look at your ProcessAgent and identify which callback each pattern maps to:
+
+callback_mapping = %{
+  # Your receive pattern -> GenServer callback
+
+  # {:get_state, from} -> which callback?
+  get_state: nil,
+
+  # {:remember, key, value} -> which callback?
+  remember: nil,
+
+  # {:DOWN, ref, :process, pid, reason} -> which callback?
+  monitor_message: nil,
+
+  # :stop -> which callback handles this?
+  stop: nil
+}
+
+# Fill in your answers:
+# callback_mapping = %{
+#   get_state: :handle_call,      # Needs a response - synchronous
+#   remember: :handle_cast,        # Fire and forget - async
+#   monitor_message: :handle_info, # System message, not GenServer call
+#   stop: :terminate               # Cleanup callback
+# }
+```
+
+### Why Synchronous vs Asynchronous?
+
+From Learn You Some Erlang on the difference:
+
+> `gen_server:call/2-3` sends synchronous requests and blocks until replies
+> arrive (default 5-second timeout). `gen_server:cast/2` sends asynchronous
+> messages with immediate return.
+
+### 🤔 When Would You Use Each?
+
+```elixir
+# For each operation in your agent framework, decide: call or cast?
+
+operations = [
+  {:get_agent_state, "Need to know current state to display it"},
+  {:remember_fact, "Store something in memory"},
+  {:send_task, "Queue a task for processing"},
+  {:process_next, "Process and return the result"},
+  {:broadcast_shutdown, "Tell all agents to prepare for shutdown"}
+]
+
+# Your answers:
+# {:get_agent_state, :call}    - We need the state back
+# {:remember_fact, :cast}      - Fire and forget, don't need confirmation
+# {:send_task, :cast}          - Queuing is async
+# {:process_next, :call}       - We want the result
+# {:broadcast_shutdown, :cast} - Don't wait for acknowledgment
+
+# But wait - what about :remember_fact?
+# Is there a case where you WOULD want it to be a call?
+
+remember_as_call_scenario = """
+# When might you want remember/1 to be synchronous?
+# Hint: Think about ordering guarantees...
+"""
+```
+
+---
+
+## Section 4: The Supervision Tree
+
+### Why Trees?
+
+From Learn You Some Erlang on supervision trees:
+
+> A supervision tree organizes processes hierarchically where supervisors
+> oversee workers and other supervisors, but workers should never supervise
+> anything. This structure ensures every process can be tracked and cleanly
+> shut down in an orderly fashion from the top down.
+
+```
+                    Application
+                         │
+                   ┌─────┴─────┐
+                   ▼           ▼
+              Supervisor   Supervisor
+                   │           │
+              ┌────┼────┐      │
+              ▼    ▼    ▼      ▼
+           Worker Worker Worker DynamicSupervisor
+                                    │
+                               ┌────┼────┐
+                               ▼    ▼    ▼
+                            Agent Agent Agent
+```
+
+### Benefits of Tree Structure
+
+1. **Fault Isolation**: Crashes in one branch don't affect others
+2. **Restart Granularity**: Can restart a subtree without affecting the whole app
+3. **Organized Shutdown**: Clean shutdown from leaves to root
+4. **Mental Model**: Clear hierarchy of responsibilities
+
+### Restart Strategies Preview
+
+| Strategy | Behavior |
+|----------|----------|
+| `:one_for_one` | Only restart the crashed child |
+| `:one_for_all` | Restart ALL children if one crashes |
+| `:rest_for_one` | Restart crashed child + all started after it |
+
+### 🤔 Choosing Strategies
+
+```elixir
+# For each scenario, which restart strategy makes sense?
+
+scenarios = [
+  %{
+    description: "5 independent worker agents, each handling different tasks",
+    workers: ["ResearchAgent", "WriterAgent", "EditorAgent", "FactCheckerAgent", "PublisherAgent"],
+    dependencies: "None - each works independently",
+    strategy: nil  # :one_for_one, :one_for_all, or :rest_for_one?
+  },
+  %{
+    description: "A pipeline: Parser -> Validator -> Transformer -> Writer",
+    workers: ["Parser", "Validator", "Transformer", "Writer"],
+    dependencies: "Each depends on the previous step's output format",
+    strategy: nil
+  },
+  %{
+    description: "Database connection pool with shared connection manager",
+    workers: ["ConnectionManager", "Worker1", "Worker2", "Worker3"],
+    dependencies: "All workers depend on ConnectionManager being correct",
+    strategy: nil
+  }
+]
+
+# Think through each one before revealing answers:
+# Scenario 1: :one_for_one - Independent workers, no reason to restart others
+# Scenario 2: :rest_for_one - If Parser crashes with bad state, downstream may have bad data
+# Scenario 3: :one_for_all - If ConnectionManager crashes, all workers have stale connections
+```
+
+### Restart Limits
+
+From Learn You Some Erlang:
+
+> Supervisors accept `MaxRestart` and `MaxTime` parameters. "If more than
+> MaxRestarts happen within MaxTime (in seconds), the supervisor just gives up"
+> and terminates itself, allowing its parent supervisor to potentially restart it.
+
+### 🤔 Why Would a Supervisor "Give Up"?
+
+```elixir
+# Consider: A worker keeps crashing every 100ms.
+# The supervisor keeps restarting it.
+# This goes on forever...
+
+# What's the problem with this?
+infinite_restart_problem = """
+# 1. ???
+# 2. ???
+# 3. ???
+"""
+
+# Answers:
+# 1. CPU/memory churn - constant spawn/crash cycle wastes resources
+# 2. Log flooding - error logs become useless
+# 3. Root cause obscured - the real bug isn't being investigated
+# 4. Cascading failures - the crashing process might affect others each time
+
+# This is why max_restarts exists - it's a circuit breaker!
+```
+
+---
+
+## Section 5: Interactive Exploration
+
+Let's explore some OTP concepts hands-on.
+
+### Exploring GenServer Behaviour
+
+```elixir
+# What callbacks does GenServer require?
+GenServer.behaviour_info(:callbacks)
+```
+
+```elixir
+# What optional callbacks exist?
+GenServer.behaviour_info(:optional_callbacks)
+```
+
+### Exploring Supervisor Behaviour
+
+```elixir
+# What callbacks does Supervisor need?
+Supervisor.behaviour_info(:callbacks)
+```
+
+### A Minimal GenServer
+
+```elixir
+defmodule MinimalServer do
+  use GenServer
+
+  # Client API
+  def start_link(initial) do
+    GenServer.start_link(__MODULE__, initial)
+  end
+
+  def get(pid) do
+    GenServer.call(pid, :get)
+  end
+
+  def set(pid, value) do
+    GenServer.cast(pid, {:set, value})
+  end
+
+  # Server Callbacks
+  @impl true
+  def init(initial) do
+    {:ok, initial}
+  end
+
+  @impl true
+  def handle_call(:get, _from, state) do
+    {:reply, state, state}
+  end
+
+  @impl true
+  def handle_cast({:set, value}, _state) do
+    {:noreply, value}
+  end
+end
+```
+
+```elixir
+# Try it out!
+{:ok, pid} = MinimalServer.start_link(0)
+```
+
+```elixir
+MinimalServer.get(pid)
+```
+
+```elixir
+MinimalServer.set(pid, 42)
+MinimalServer.get(pid)
+```
+
+### 🤔 Understanding Return Tuples
+
+```elixir
+# GenServer callbacks return specific tuples. Match each return to its meaning:
+
+return_tuples = %{
+  "{:ok, state}" => "From init - process started successfully",
+  "{:reply, response, new_state}" => "???",
+  "{:noreply, new_state}" => "???",
+  "{:stop, reason, new_state}" => "???"
+}
+
+# Fill in the meanings, then check:
+# "{:reply, response, new_state}" => "From handle_call - send response to caller, update state"
+# "{:noreply, new_state}" => "From handle_cast/info - no response needed, update state"
+# "{:stop, reason, new_state}" => "Stop the GenServer (triggers terminate callback)"
+```
+
+### The @impl Annotation
+
+Notice the `@impl true` above each callback. This tells the compiler:
+- "This function implements a behaviour callback"
+- Catches typos in callback names
+- Documents which functions are callbacks
+
+```elixir
+# What happens if you typo a callback name?
+defmodule BadServer do
+  use GenServer
+
+  @impl true
+  def init(arg), do: {:ok, arg}
+
+  # Uncomment to see the warning:
+  # @impl true
+  # def handle_cal(:get, _from, state), do: {:reply, state, state}
+end
+```
+
+---
+
+## Section 6: Why OTP Matters for Your Agent Framework
+
+### What You'll Gain
+
+| Without OTP (Phase 2) | With OTP (Phase 3) |
+|----------------------|-------------------|
+| ~400 lines of supervision logic | ~50 lines with Supervisor |
+| Manual message loop | Automatic with GenServer |
+| Custom restart logic | Built-in restart strategies |
+| No debugging tools | OTP observer, tracing |
+| No hot code reload | Supported automatically |
+
+### 🤔 Final Reflection
+
+```elixir
+# Before moving on, answer these questions:
+
+final_reflection = %{
+  # 1. What's the key insight behind OTP's design?
+  key_insight: """
+  # Your answer: ???
+  # Hint: Think "generic vs. specific"
+  """,
+
+  # 2. Why did we build Phase 2 manually before learning OTP?
+  phase_2_purpose: """
+  # Your answer: ???
+  """,
+
+  # 3. Which OTP behaviour will your ProcessAgent become?
+  process_agent_becomes: nil,  # :gen_server, :supervisor, or :application?
+
+  # 4. Which OTP behaviour will your AgentMonitor become?
+  agent_monitor_becomes: nil
+}
+
+# Check your understanding:
+# 1. "Separate generic server mechanics from application-specific logic"
+# 2. "To understand what OTP does for us, we needed to do it ourselves first"
+# 3. :gen_server (it has state and handles messages)
+# 4. :supervisor (or DynamicSupervisor - it manages child processes)
+```
+
+---
+
+## Exercises
+
+### Exercise 1: Identify the Pattern
+
+For each of these scenarios, identify which OTP behaviour you would use:
+
+1. A cache that stores key-value pairs and responds to get/set requests
+2. A pool of worker processes that should be restarted if they crash
+3. A simple counter that just needs to track a number
+4. The entry point for starting your entire application
+
+```elixir
+exercise_1_answers = %{
+  cache: nil,          # :gen_server, :agent, or :supervisor?
+  worker_pool: nil,    # :gen_server, :agent, or :supervisor?
+  counter: nil,        # :gen_server or :agent?
+  app_entry: nil       # :application or :supervisor?
+}
+```
+
+### Exercise 2: Map Your Code
+
+Look at your Phase 2 `ProcessAgent` module. List 3 things that GenServer
+will handle automatically that you had to code manually:
+
+```elixir
+genserver_provides = [
+  # 1. ?
+  # 2. ?
+  # 3. ?
+]
+```
+
+### Exercise 3: Supervision Tree Design
+
+Design a supervision tree for an agent framework with:
+- 3 permanent worker agents
+- A dynamic pool of temporary agents
+- A shared state store
+
+Draw it as ASCII art:
+
+```elixir
+supervision_tree = """
+                    ?
+                    │
+            ┌───────┼───────┐
+            ?       ?       ?
+"""
+```
+
+---
+
+## Key Takeaways
+
+1. **OTP is patterns, not magic** - You already implemented OTP concepts in Phase 2
+2. **Generic vs. Specific** - OTP handles the generic, you focus on your logic
+3. **Behaviours are contracts** - They define callbacks your module must implement
+4. **GenServer = your loop** - Handles the receive loop, state, and more
+5. **Supervisor = your monitor** - Handles process monitoring and restarts
+6. **Trees isolate faults** - Hierarchical supervision contains failures
+7. **30 years of refinement** - OTP is battle-tested at massive scale
+
+---
+
+## What's Next?
+
+In the next session, we'll dive deep into **GenServer**:
+- The full callback contract
+- Converting ProcessAgent to AgentServer
+- Synchronous (call) vs asynchronous (cast) patterns
+- Handling system messages with handle_info
+
+You'll transform your manual process loop into a proper OTP GenServer!
+
+---
+
+## Navigation
+
+← [Previous: Session 11 - Checkpoint: Process Agents](11_checkpoint_process_agents.livemd)
+
+→ [Next: Session 13 - GenServer](13_genserver.livemd)

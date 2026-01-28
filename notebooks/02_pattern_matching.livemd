@@ -1,0 +1,536 @@
+# Phase 1, Session 2: Pattern Matching
+
+## Overview
+
+Pattern matching is **THE most important concept** in Elixir and Erlang. It's not just a feature - it's the foundation of how you write code in these languages.
+
+**What you'll learn:**
+
+* The match operator `=` (it's NOT assignment!)
+* Destructuring tuples, lists, and maps
+* The pin operator `^`
+* Why pattern matching makes message handling elegant
+
+---
+
+## Why Pattern Matching Matters for Your Agent Framework
+
+In your multi-agent system, agents will constantly:
+
+* Receive messages of different types
+* Extract data from those messages
+* Decide how to respond based on message structure
+
+Pattern matching lets you do all this **declaratively** - you describe the shape of data you expect, and Elixir extracts what you need automatically.
+
+---
+
+## Section 1: The Match Operator
+
+### 1.1 The `=` is NOT Assignment
+
+In most languages, `=` means "assign the value on the right to the variable on the left."
+
+In Elixir, `=` means **"match the left side to the right side."**
+
+```elixir
+# This looks like assignment, but it's actually matching
+x = 1
+# Elixir asks: "Can I make the left side equal the right side?"
+# Yes! By binding x to 1.
+x
+```
+
+```elixir
+# Here's the proof that = is matching, not assignment
+# If x is 1, then 1 = x should work (because 1 matches 1)
+1 = x  # This works!
+```
+
+```elixir
+# But this will fail - 2 doesn't match 1
+# Uncomment to see the error:
+# 2 = x  # ** (MatchError) no match of right hand side value: 1
+```
+
+### 1.2 The Mental Model
+
+Think of `=` as an equation that Elixir tries to make true:
+
+```elixir
+# Elixir tries to make left = right
+# It can bind unbound variables to make the equation work
+
+a = 5        # Bind a to 5 to make equation true
+{b, c} = {1, 2}  # Bind b to 1, c to 2
+
+{a, b, c}
+```
+
+---
+
+## Section 2: Matching Tuples
+
+Tuples are perfect for pattern matching because they have fixed, known structure.
+
+### 2.1 Basic Tuple Matching
+
+```elixir
+# Extract values from a tuple
+{status, message} = {:ok, "Operation successful"}
+
+{status, message}
+```
+
+```elixir
+# Match specific values and extract others
+{:ok, result} = {:ok, 42}
+
+result  # We extracted the 42
+```
+
+```elixir
+# This will fail - the atoms don't match
+# {:ok, result} = {:error, "Something went wrong"}
+# ** (MatchError)
+```
+
+### 2.2 The `:ok` / `:error` Pattern
+
+This is THE most common pattern in Elixir. Functions return `{:ok, value}` or `{:error, reason}`.
+
+```elixir
+# Simulating a function that might succeed or fail
+successful_result = {:ok, %{data: "user info", id: 123}}
+failed_result = {:error, :not_found}
+
+# Extract data from successful result
+{:ok, data} = successful_result
+data
+```
+
+```elixir
+# Extract reason from failed result
+{:error, reason} = failed_result
+reason
+```
+
+### 2.3 Nested Tuple Matching
+
+```elixir
+# You can match nested structures
+{:ok, {name, age}} = {:ok, {"Alice", 30}}
+
+{name, age}
+```
+
+```elixir
+# Agent message example
+message = {:task, "task-001", {:summarize, "Some long text..."}}
+
+{:task, task_id, {action, content}} = message
+
+{task_id, action, content}
+```
+
+---
+
+## Section 3: Matching Lists
+
+Lists use the special `[head | tail]` syntax for matching.
+
+### 3.1 Head and Tail
+
+```elixir
+# Every non-empty list has a head (first element) and tail (rest)
+list = [1, 2, 3, 4, 5]
+
+[head | tail] = list
+
+{head, tail}
+```
+
+```elixir
+# Get first two elements
+[first, second | rest] = [1, 2, 3, 4, 5]
+
+{first, second, rest}
+```
+
+```elixir
+# Match specific first element
+[1 | rest] = [1, 2, 3]  # Works - first element is 1
+
+rest
+```
+
+```elixir
+# This would fail - first element isn't 1
+# [1 | rest] = [2, 3, 4]
+# ** (MatchError)
+```
+
+### 3.2 The Underscore `_` Wildcard
+
+Use `_` when you don't care about a value:
+
+```elixir
+# We only want the head, ignore the tail
+[head | _] = [1, 2, 3, 4, 5]
+
+head
+```
+
+```elixir
+# Get second element, ignore first and rest
+[_, second | _] = [1, 2, 3, 4, 5]
+
+second
+```
+
+```elixir
+# In tuples too
+{:ok, _, important} = {:ok, "ignore this", "keep this"}
+
+important
+```
+
+### 3.3 Processing Agent Inbox
+
+```elixir
+# Agent inbox with messages
+inbox = [
+  {:task, "003", %{action: :analyze}},
+  {:task, "002", %{action: :summarize}},
+  {:task, "001", %{action: :search}}
+]
+
+# Get next message to process
+[current_message | remaining_inbox] = inbox
+
+{current_message, length(remaining_inbox)}
+```
+
+---
+
+## Section 4: Matching Maps
+
+Maps match on a **subset** of keys - you don't need to match all keys.
+
+### 4.1 Basic Map Matching
+
+```elixir
+# Extract specific keys from a map
+agent = %{name: "Researcher", state: :idle, inbox: [], memory: %{}}
+
+%{name: agent_name} = agent
+
+agent_name
+```
+
+```elixir
+# Extract multiple keys
+%{name: n, state: s} = agent
+
+{n, s}
+```
+
+```elixir
+# The map can have MORE keys than you match
+%{name: name} = %{name: "Alice", age: 30, role: "admin"}
+
+name  # Works! We only matched the keys we cared about
+```
+
+### 4.2 Matching Nested Maps
+
+```elixir
+# Agent with nested memory
+agent = %{
+  name: "Researcher",
+  state: :busy,
+  memory: %{
+    context: "Researching Elixir",
+    facts: ["Elixir runs on BEAM", "Pattern matching is powerful"]
+  }
+}
+
+%{memory: %{context: ctx}} = agent
+
+ctx
+```
+
+### 4.3 Matching with String Keys
+
+```elixir
+# Maps can have string keys (common with JSON)
+json_data = %{"name" => "Bob", "age" => 25}
+
+%{"name" => name} = json_data
+
+name
+```
+
+### 4.4 Empty Map Matches Any Map
+
+```elixir
+# An empty pattern matches any map
+%{} = %{a: 1, b: 2, c: 3}  # Matches!
+
+# Useful for "is this a map?" checks
+:matched
+```
+
+---
+
+## Section 5: The Pin Operator `^`
+
+By default, variables on the left side of `=` get **rebound**. The pin operator `^` prevents this.
+
+### 5.1 The Problem: Rebinding
+
+```elixir
+# x gets rebound to new value
+x = 1
+x = 2  # x is now 2
+
+x
+```
+
+### 5.2 Pin to Match Existing Value
+
+```elixir
+# Use ^ to match against existing value instead of rebinding
+x = 1
+
+# This MATCHES x's value (1) against the right side
+^x = 1  # Works! 1 = 1
+
+:matched
+```
+
+```elixir
+# This will fail - trying to match 1 against 2
+x = 1
+# ^x = 2  # ** (MatchError) no match of right hand side value: 2
+```
+
+### 5.3 Pin in Patterns
+
+```elixir
+# Common use: match a specific ID you're looking for
+expected_task_id = "task-001"
+
+message = {:response, "task-001", "completed"}
+
+{:response, ^expected_task_id, result} = message
+
+result
+```
+
+```elixir
+# This would fail if IDs don't match
+expected_id = "task-001"
+wrong_message = {:response, "task-999", "data"}
+
+# {:response, ^expected_id, result} = wrong_message
+# ** (MatchError) - "task-999" doesn't match "task-001"
+
+:skipped_to_avoid_error
+```
+
+### 5.4 Why Pin Matters for Agents
+
+```elixir
+# Scenario: You sent a task and are waiting for its specific response
+sent_task_id = "abc-123"
+
+incoming_messages = [
+  {:response, "xyz-789", "wrong task"},
+  {:response, "abc-123", "correct response!"},
+  {:response, "def-456", "another task"}
+]
+
+# Find the response matching our task
+Enum.find(incoming_messages, fn
+  {:response, ^sent_task_id, _result} -> true
+  _ -> false
+end)
+```
+
+---
+
+## Section 6: Pattern Matching in Practice
+
+### 6.1 Case Expressions
+
+`case` uses pattern matching to choose a code path:
+
+```elixir
+message = {:task, "001", %{action: :search, query: "Elixir tutorials"}}
+
+case message do
+  {:task, id, %{action: :search, query: q}} ->
+    "Searching for '#{q}' (task #{id})"
+
+  {:task, id, %{action: :summarize}} ->
+    "Summarizing content (task #{id})"
+
+  {:response, id, result} ->
+    "Got response for #{id}: #{inspect(result)}"
+
+  _ ->
+    "Unknown message type"
+end
+```
+
+### 6.2 Multiple Patterns in One Case
+
+```elixir
+result = {:error, :timeout}
+
+case result do
+  {:ok, value} ->
+    "Success: #{inspect(value)}"
+
+  {:error, :not_found} ->
+    "Item not found"
+
+  {:error, :timeout} ->
+    "Operation timed out, will retry"
+
+  {:error, reason} ->
+    "Error: #{inspect(reason)}"
+end
+```
+
+### 6.3 Guards Add Extra Conditions
+
+```elixir
+value = 15
+
+case value do
+  x when x < 0 -> "negative"
+  x when x == 0 -> "zero"
+  x when x > 0 and x < 10 -> "small positive"
+  x when x >= 10 -> "large positive"
+end
+```
+
+---
+
+## Section 7: Hands-On Exercises
+
+### Exercise 1: Extract Agent Info
+
+Given an agent map, extract the name and current state:
+
+```elixir
+agent = %{
+  name: "Analyzer",
+  state: :processing,
+  inbox: [{:task, "001", %{}}],
+  memory: %{last_action: :search}
+}
+
+# Your solution: use pattern matching to extract name and state
+%{name: name, state: state} = agent
+
+{name, state}
+```
+
+### Exercise 2: Process Different Message Types
+
+Write a case expression that handles three message types:
+
+```elixir
+# Test with different messages
+message = {:task, "t-001", %{action: :analyze, data: [1,2,3]}}
+# message = {:response, "t-001", {:ok, "analysis complete"}}
+# message = {:error, "t-001", :timeout}
+
+case message do
+  {:task, id, payload} ->
+    "Processing task #{id} with action: #{payload.action}"
+
+  {:response, id, {:ok, result}} ->
+    "Task #{id} succeeded: #{result}"
+
+  {:response, id, {:error, reason}} ->
+    "Task #{id} failed: #{reason}"
+
+  {:error, id, reason} ->
+    "Error on task #{id}: #{reason}"
+
+  other ->
+    "Unknown message: #{inspect(other)}"
+end
+```
+
+### Exercise 3: Find Matching Response
+
+Given a list of responses, find the one matching a specific task ID:
+
+```elixir
+waiting_for = "task-42"
+
+responses = [
+  {:response, "task-10", {:ok, "data1"}},
+  {:response, "task-42", {:ok, "this is the one!"}},
+  {:response, "task-99", {:error, :failed}}
+]
+
+# Use Enum.find with pattern matching and pin operator
+Enum.find(responses, fn
+  {:response, ^waiting_for, _} -> true
+  _ -> false
+end)
+```
+
+### Exercise 4: Destructure Nested Message
+
+Extract the action and query from this nested message:
+
+```elixir
+message = {:task, "search-001", %{
+  action: :web_search,
+  params: %{
+    query: "Elixir GenServer tutorial",
+    max_results: 10
+  },
+  priority: :high
+}}
+
+# Destructure to get action and query
+{:task, _id, %{action: action, params: %{query: query}}} = message
+
+{action, query}
+```
+
+---
+
+## Summary
+
+| Concept        | Syntax            | Purpose                                    |
+| -------------- | ----------------- | ------------------------------------------ |
+| Match operator | `=`               | Make left equal right by binding variables |
+| Tuple match    | `{a, b} = {1, 2}` | Extract tuple elements                     |
+
+| List head/tail | `[h | t] = list`    | Split list into first and rest             |
+| Map match      | `%{key: v} = map`   | Extract map values (subset)                |
+| Wildcard       | `_`                 | Ignore a value                             |
+| Pin operator   | `^var`              | Match existing value, don't rebind         |
+| Case           | `case x do ... end` | Branch based on pattern                    |
+
+## Key Takeaways for Agent Framework
+
+1. **Message routing**: Use `case` with pattern matching to route different message types
+2. **Response correlation**: Use `^` pin operator to match responses to sent tasks
+3. **Data extraction**: Destructure payloads to get exactly what you need
+4. **Error handling**: Match `{:ok, result}` and `{:error, reason}` patterns
+
+---
+
+## Next Session
+
+**Session 3: Functions & Pipe Operator** - Define functions with pattern matching in their heads, and chain operations elegantly with `|>`.

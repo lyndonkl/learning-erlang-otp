@@ -1,0 +1,420 @@
+# Phase 1, Session 5: Mix & Project Setup
+
+## Overview
+
+Mix is Elixir's build tool. It handles:
+
+* Creating new projects
+* Managing dependencies
+* Compiling code
+* Running tests
+* And much more
+
+**What you'll learn:**
+
+* Creating projects with `mix new`
+* Understanding project structure
+* The `mix.exs` configuration file
+* Managing dependencies
+* Running tests with `mix test`
+* Interactive development with `iex -S mix`
+
+---
+
+## Why This Matters for Your Agent Framework
+
+You're done with Livebook experiments. Now we build a **real project**:
+
+* Proper file organization
+* Automated testing
+* Dependency management
+* Production-ready structure
+
+---
+
+## Section 1: Creating a Project
+
+### 1.1 The `mix new` Command
+
+```bash
+# Create a new project
+mix new agent_framework
+
+# Create with supervision tree (for OTP - we'll use this later)
+mix new agent_framework --sup
+```
+
+### 1.2 Project Structure
+
+After running `mix new agent_framework`, you get:
+
+```
+agent_framework/
+├── lib/
+│   └── agent_framework.ex    # Main module
+├── test/
+│   ├── agent_framework_test.exs
+│   └── test_helper.exs
+├── mix.exs                   # Project configuration
+├── .formatter.exs            # Code formatter config
+├── .gitignore
+└── README.md
+```
+
+**Key directories:**
+
+* `lib/` — Your source code
+* `test/` — Your tests
+* `_build/` — Compiled artifacts (created on first compile)
+* `deps/` — Downloaded dependencies (created by `mix deps.get`)
+
+---
+
+## Section 2: The mix.exs File
+
+The `mix.exs` file is your project's configuration. Here's what a typical one looks like:
+
+```elixir
+defmodule AgentFramework.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :agent_framework,          # Application name (atom)
+      version: "0.1.0",               # Semantic version
+      elixir: "~> 1.14",              # Required Elixir version
+      start_permanent: Mix.env() == :prod,  # Crash if app crashes in prod
+      deps: deps()                    # Dependencies
+    ]
+  end
+
+  # Application configuration
+  def application do
+    [
+      extra_applications: [:logger]   # Built-in apps to include
+    ]
+  end
+
+  # Dependencies
+  defp deps do
+    [
+      # {:dep_name, "~> 1.0"}
+      # {:dep_from_git, git: "https://github.com/user/repo.git"}
+    ]
+  end
+end
+```
+
+### 2.1 Version Constraints
+
+```elixir
+# Exact version
+{:jason, "1.4.0"}
+
+# Semantic versioning
+{:jason, "~> 1.4"}      # >= 1.4.0 and < 2.0.0
+{:jason, "~> 1.4.0"}    # >= 1.4.0 and < 1.5.0
+
+# Range
+{:jason, ">= 1.0.0 and < 2.0.0"}
+```
+
+### 2.2 Common Dependencies
+
+```elixir
+defp deps do
+  [
+    # JSON encoding/decoding
+    {:jason, "~> 1.4"},
+
+    # HTTP client
+    {:req, "~> 0.4"},
+
+    # Testing (only in test environment)
+    {:mox, "~> 1.0", only: :test},
+
+    # Development tools (only in dev)
+    {:dialyxir, "~> 1.3", only: [:dev], runtime: false}
+  ]
+end
+```
+
+---
+
+## Section 3: Mix Commands
+
+### Essential Commands
+
+| Command            | Purpose                       |
+| ------------------ | ----------------------------- |
+| `mix new name`     | Create new project            |
+| `mix compile`      | Compile the project           |
+| `mix test`         | Run all tests                 |
+| `mix deps.get`     | Fetch dependencies            |
+| `mix deps.compile` | Compile dependencies          |
+| `mix format`       | Format code                   |
+| `mix help`         | List all commands             |
+| `iex -S mix`       | Start IEx with project loaded |
+
+### 3.1 Compiling
+
+```bash
+# Compile the project
+mix compile
+
+# Force recompilation
+mix compile --force
+```
+
+### 3.2 Running Tests
+
+```bash
+# Run all tests
+mix test
+
+# Run specific test file
+mix test test/agent_framework_test.exs
+
+# Run specific line
+mix test test/agent_framework_test.exs:10
+
+# Run with verbose output
+mix test --trace
+```
+
+### 3.3 Interactive Development
+
+```bash
+# Start IEx with your project loaded
+iex -S mix
+
+# In IEx, you can:
+# - Call your functions
+# - Recompile: recompile()
+# - Get help: h ModuleName
+```
+
+---
+
+## Section 4: Environments
+
+Mix has three built-in environments:
+
+| Environment | Purpose               | How to use                 |
+| ----------- | --------------------- | -------------------------- |
+| `:dev`      | Development (default) | `mix compile`              |
+| `:test`     | Running tests         | `mix test` (auto)          |
+| `:prod`     | Production            | `MIX_ENV=prod mix compile` |
+
+### Checking Current Environment
+
+```elixir
+# In your code
+Mix.env()  # Returns :dev, :test, or :prod
+```
+
+### Environment-Specific Dependencies
+
+```elixir
+defp deps do
+  [
+    {:jason, "~> 1.4"},                        # All environments
+    {:mox, "~> 1.0", only: :test},             # Test only
+    {:dialyxir, "~> 1.3", only: :dev},         # Dev only
+    {:observer_cli, "~> 1.7", only: [:dev]}    # Dev only
+  ]
+end
+```
+
+---
+
+## Section 5: Writing Tests
+
+### 5.1 Test File Structure
+
+Tests go in `test/` and must end with `_test.exs`:
+
+```elixir
+# test/agent_framework_test.exs
+defmodule AgentFrameworkTest do
+  use ExUnit.Case
+  doctest AgentFramework
+
+  describe "hello/0" do
+    test "returns greeting" do
+      assert AgentFramework.hello() == :world
+    end
+  end
+end
+```
+
+### 5.2 Common Assertions
+
+```elixir
+# Equality
+assert value == expected
+refute value == not_expected
+
+# Pattern matching
+assert {:ok, _result} = some_function()
+assert %{name: "Alice"} = user
+
+# Truthiness
+assert value
+refute nil_value
+
+# Exceptions
+assert_raise ArgumentError, fn -> raise ArgumentError end
+
+# Approximately equal (for floats)
+assert_in_delta 3.14159, calculated_pi, 0.001
+```
+
+### 5.3 Organizing Tests with `describe`
+
+```elixir
+defmodule AgentTest do
+  use ExUnit.Case
+
+  describe "new/1" do
+    test "creates agent with name" do
+      agent = Agent.new("Worker")
+      assert agent.name == "Worker"
+    end
+
+    test "sets initial state to idle" do
+      agent = Agent.new("Worker")
+      assert agent.state == :idle
+    end
+  end
+
+  describe "process_message/2" do
+    test "handles task messages" do
+      # ...
+    end
+
+    test "handles response messages" do
+      # ...
+    end
+  end
+end
+```
+
+### 5.4 Setup and Fixtures
+
+```elixir
+defmodule AgentTest do
+  use ExUnit.Case
+
+  # Runs before each test
+  setup do
+    agent = AgentFramework.Agent.new("TestAgent")
+    {:ok, agent: agent}
+  end
+
+  test "agent starts idle", %{agent: agent} do
+    assert agent.state == :idle
+  end
+
+  test "agent can become busy", %{agent: agent} do
+    busy_agent = AgentFramework.Agent.set_busy(agent)
+    assert busy_agent.state == :busy
+  end
+end
+```
+
+---
+
+## Section 6: Project Organization
+
+### Recommended Structure for Agent Framework
+
+```
+agent_framework/
+├── lib/
+│   ├── agent_framework.ex           # Public API
+│   ├── agent_framework/
+│   │   ├── agent.ex                 # Agent struct & functions
+│   │   ├── message.ex               # Message struct
+│   │   └── handler.ex               # Message handling
+├── test/
+│   ├── agent_framework_test.exs
+│   ├── agent_framework/
+│   │   ├── agent_test.exs
+│   │   ├── message_test.exs
+│   │   └── handler_test.exs
+│   └── test_helper.exs
+└── mix.exs
+```
+
+### Module Naming Convention
+
+File path maps to module name:
+
+* `lib/agent_framework.ex` → `AgentFramework`
+* `lib/agent_framework/agent.ex` → `AgentFramework.Agent`
+* `lib/agent_framework/message.ex` → `AgentFramework.Message`
+
+---
+
+## Section 7: Hands-On - Create the Project
+
+Now let's create the actual project! Run these commands in your terminal:
+
+### Step 1: Create the Project
+
+```bash
+cd /Users/kushaldsouza/Documents/Thinking/learningerlangotp
+mix new agent_framework
+cd agent_framework
+```
+
+### Step 2: Verify Structure
+
+```bash
+ls -la
+# Should see: lib/, test/, mix.exs, etc.
+```
+
+### Step 3: Run Initial Tests
+
+```bash
+mix test
+# Should pass - default test exists
+```
+
+### Step 4: Start IEx
+
+```bash
+iex -S mix
+# Try: AgentFramework.hello()
+```
+
+---
+
+## Summary
+
+| Concept        | Command/File   | Purpose                |
+| -------------- | -------------- | ---------------------- |
+| Create project | `mix new name` | Scaffold new project   |
+| Configuration  | `mix.exs`      | Project settings, deps |
+| Source code    | `lib/`         | Your modules           |
+| Tests          | `test/`        | ExUnit tests           |
+| Compile        | `mix compile`  | Build project          |
+| Test           | `mix test`     | Run tests              |
+| Dependencies   | `mix deps.get` | Fetch deps             |
+| Interactive    | `iex -S mix`   | REPL with project      |
+
+## Key Takeaways
+
+1. **Mix is your build tool** - handles compilation, testing, dependencies
+2. **mix.exs is configuration** - defines your project
+3. **Tests live in test/** - use ExUnit for testing
+4. **Environments matter** - dev, test, prod have different behaviors
+5. **iex -S mix** - your interactive playground with full project access
+
+---
+
+## Next Session
+
+**Session 6: Checkpoint Project** - Build the Agent module with message handling, write tests, and verify everything works!

@@ -1,0 +1,893 @@
+# Session 14: Supervisors - Fault Tolerance Formalized
+
+```elixir
+Mix.install([])
+```
+
+## Introduction
+
+In Session 13, you converted your `ProcessAgent` into a proper `GenServer`.
+Now it's time to tackle the other half of Phase 2's manual work: your
+`AgentMonitor` becomes an OTP **Supervisor**.
+
+Remember your ~200 lines of monitoring, restart logic, and failure handling?
+OTP Supervisor does all that in about 10-20 lines.
+
+### Sources for This Session
+
+This session synthesizes concepts from:
+- [Elixir School - OTP Supervisors](https://elixirschool.com/en/lessons/advanced/otp_supervisors)
+- [Learn You Some Erlang - Who Supervises The Supervisors?](https://learnyousomeerlang.com/supervisors)
+
+## Learning Goals
+
+By the end of this session, you'll be able to:
+- Create Supervisors with child specifications
+- Choose the right restart strategy for your use case
+- Use DynamicSupervisor for runtime children
+- Build supervision trees
+- Convert AgentMonitor to AgentSupervisor
+
+---
+
+## Section 1: Why Supervision?
+
+### 🤔 Opening Reflection
+
+Think back to your Phase 2 `AgentMonitor`:
+
+```elixir
+# Review your AgentMonitor and answer:
+
+reflection_questions = %{
+  # 1. How many lines of code was your restart logic?
+  restart_lines: "???",
+
+  # 2. How many edge cases did you handle?
+  edge_cases_handled: "???",
+
+  # 3. What happens if AgentMonitor itself crashes?
+  monitor_crashes: "???",
+
+  # 4. Can you easily change from :always to :transient restart?
+  change_strategy: "???"
+}
+
+# The truth:
+# 1. Probably 50-100 lines just for restart logic
+# 2. Maybe 3-5? (normal exit, crash, max restarts)
+# 3. All agents become unsupervised! (Single point of failure)
+# 4. Requires modifying multiple functions
+```
+
+### The Problem with Manual Supervision
+
+From Learn You Some Erlang:
+
+> Unsupervised processes cause memory leaks and unpredictability. Complete
+> supervision enables proper garbage collection and controlled application
+> termination.
+
+Your `AgentMonitor` had a fundamental flaw: **who monitors the monitor?**
+
+```
+┌─────────────────────────────────────────┐
+│     Your Phase 2 Architecture           │
+│                                         │
+│   AgentMonitor                          │
+│   (who watches this?)                   │
+│        │                                │
+│   ┌────┼────┐                           │
+│   ▼    ▼    ▼                           │
+│ Agent Agent Agent                       │
+│                                         │
+│ If AgentMonitor crashes...              │
+│ → No one restarts the agents            │
+│ → No one restarts the monitor           │
+│ → System degrades silently              │
+└─────────────────────────────────────────┘
+```
+
+OTP solves this with supervision **trees**:
+
+```
+┌─────────────────────────────────────────┐
+│     OTP Supervision Tree                │
+│                                         │
+│   Application (top-level supervisor)    │
+│        │                                │
+│   AgentSupervisor                       │
+│   (Application restarts this)           │
+│        │                                │
+│   ┌────┼────┐                           │
+│   ▼    ▼    ▼                           │
+│ Agent Agent Agent                       │
+│                                         │
+│ If AgentSupervisor crashes...           │
+│ → Application restarts it               │
+│ → New supervisor restarts agents        │
+│ → System self-heals!                    │
+└─────────────────────────────────────────┘
+```
+
+---
+
+## Section 2: Restart Strategies
+
+The heart of supervisor configuration is the **restart strategy**.
+
+### 🤔 Predicting Behavior
+
+Before learning the strategies, try to predict what each should do:
+
+```elixir
+# Three workers: A, B, C (started in that order)
+# Worker B crashes.
+
+# For each strategy, what happens?
+predictions = %{
+  one_for_one: "B crashes → ???",
+  one_for_all: "B crashes → ???",
+  rest_for_one: "B crashes → ???"
+}
+
+# Think about it before scrolling down...
+```
+
+### one_for_one
+
+**Only restart the crashed child.**
+
+```
+Before:  A ✓   B ✓   C ✓
+B crashes...
+After:   A ✓   B' ✓  C ✓   (B' = new B)
+```
+
+**Use when**: Children are independent and don't share state.
+
+```elixir
+defmodule IndependentWorkersSupervisor do
+  use Supervisor
+
+  def start_link(opts) do
+    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def init(_opts) do
+    children = [
+      {WorkerA, []},
+      {WorkerB, []},
+      {WorkerC, []}
+    ]
+
+    Supervisor.init(children, strategy: :one_for_one)
+  end
+end
+```
+
+### one_for_all
+
+**Restart ALL children if one crashes.**
+
+```
+Before:  A ✓   B ✓   C ✓
+B crashes...
+After:   A' ✓  B' ✓  C' ✓   (all restarted)
+```
+
+**Use when**: Children heavily depend on each other and must stay in sync.
+
+```elixir
+defmodule DependentSystemSupervisor do
+  use Supervisor
+
+  @impl true
+  def init(_opts) do
+    children = [
+      {SharedState, []},   # If this crashes, workers have stale refs
+      {Worker1, []},
+      {Worker2, []}
+    ]
+
+    Supervisor.init(children, strategy: :one_for_all)
+  end
+end
+```
+
+### rest_for_one
+
+**Restart crashed child AND all children started after it.**
+
+```
+Before:  A ✓   B ✓   C ✓
+B crashes...
+After:   A ✓   B' ✓  C' ✓   (B and C restarted, A untouched)
+```
+
+**Use when**: Children form a dependency chain where later children depend on earlier ones.
+
+```elixir
+defmodule PipelineSupervisor do
+  use Supervisor
+
+  @impl true
+  def init(_opts) do
+    children = [
+      {Parser, []},       # If this crashes...
+      {Validator, []},    # ...this needs reset (has Parser's format cached)
+      {Transformer, []}   # ...this too
+    ]
+
+    Supervisor.init(children, strategy: :rest_for_one)
+  end
+end
+```
+
+### 🤔 Choosing the Right Strategy
+
+```elixir
+# For each scenario, which strategy is best?
+
+scenarios = [
+  %{
+    name: "Web request handlers",
+    description: "100 GenServers, each handling independent HTTP requests",
+    your_choice: nil
+  },
+  %{
+    name: "Database pool",
+    description: "Connection manager + 5 workers sharing the connection",
+    your_choice: nil
+  },
+  %{
+    name: "ETL pipeline",
+    description: "Extractor -> Transformer -> Loader, each passes data to next",
+    your_choice: nil
+  },
+  %{
+    name: "Agent framework",
+    description: "Multiple independent agents, each handles different tasks",
+    your_choice: nil
+  },
+  %{
+    name: "Chat rooms",
+    description: "Room registry + 100 room processes",
+    your_choice: nil
+  }
+]
+
+# Fill in your_choice with :one_for_one, :one_for_all, or :rest_for_one
+
+# Answers:
+# Web handlers: :one_for_one - Independent requests
+# Database pool: :one_for_all - Workers depend on manager
+# ETL pipeline: :rest_for_one - Chain dependency
+# Agent framework: :one_for_one - Independent agents
+# Chat rooms: :one_for_one - Rooms are independent, registry is separate
+```
+
+---
+
+## Section 3: Child Specifications
+
+Every child needs a **specification** telling the supervisor how to start and manage it.
+
+### The Full Child Spec
+
+From Learn You Some Erlang:
+> Each child requires: ChildId, StartFunc, Restart type, Shutdown timeout,
+> Type (worker/supervisor), and Modules list.
+
+In Elixir, this looks like:
+
+```elixir
+%{
+  id: MyWorker,                    # Unique identifier
+  start: {MyWorker, :start_link, [arg1, arg2]},  # {Module, Function, Args}
+  restart: :permanent,             # :permanent | :temporary | :transient
+  shutdown: 5000,                  # Milliseconds to wait for graceful stop
+  type: :worker                    # :worker | :supervisor
+}
+```
+
+### The Shorthand
+
+Most of the time, you use the shorthand:
+
+```elixir
+children = [
+  {MyWorker, arg},           # Calls MyWorker.start_link(arg)
+  {AnotherWorker, [a, b]},   # Calls AnotherWorker.start_link([a, b])
+  MyStatelessWorker          # Calls MyStatelessWorker.start_link([])
+]
+```
+
+This works because modules can define `child_spec/1`:
+
+```elixir
+defmodule MyWorker do
+  use GenServer
+
+  def child_spec(arg) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [arg]},
+      restart: :permanent,
+      shutdown: 5000,
+      type: :worker
+    }
+  end
+
+  def start_link(arg) do
+    GenServer.start_link(__MODULE__, arg)
+  end
+end
+```
+
+### 🤔 Restart Types
+
+```elixir
+# Match each restart type to its behavior:
+
+restart_types = %{
+  permanent: "???",
+  temporary: "???",
+  transient: "???"
+}
+
+# Fill in, then check:
+# permanent: "Always restart, regardless of exit reason"
+# temporary: "Never restart, even if it crashes abnormally"
+# transient: "Only restart if it exits abnormally (not :normal or :shutdown)"
+```
+
+### 🤔 When to Use Each Restart Type
+
+```elixir
+# For each scenario, which restart type?
+
+restart_scenarios = [
+  {:web_server, "Core HTTP server that must always run"},
+  {:one_time_job, "Process that runs once at startup then exits"},
+  {:request_handler, "Handles one request then exits normally"},
+  {:agent, "Long-running agent that should recover from crashes"},
+  {:cleanup_worker, "Runs periodically, ok if it misses a cycle"}
+]
+
+# Your answers:
+your_restart_choices = %{
+  web_server: nil,      # :permanent, :temporary, or :transient?
+  one_time_job: nil,
+  request_handler: nil,
+  agent: nil,
+  cleanup_worker: nil
+}
+
+# Answers:
+# web_server: :permanent - Must always be running
+# one_time_job: :temporary - Exits normally when done
+# request_handler: :transient - Normal exit is fine, crash should restart
+# agent: :permanent - Long-running, should always recover
+# cleanup_worker: :transient - Normal completion is fine
+```
+
+---
+
+## Section 4: Restart Limits
+
+From Learn You Some Erlang:
+
+> Supervisors accept `MaxRestart` and `MaxTime` parameters. "If more than
+> MaxRestarts happen within MaxTime (in seconds), the supervisor just gives up"
+> and terminates itself.
+
+### Why Limits Matter
+
+```elixir
+# Imagine a worker with a bug that crashes on startup:
+
+buggy_restart_loop = """
+1. Worker starts
+2. Bug triggers, worker crashes
+3. Supervisor restarts worker
+4. Worker starts
+5. Bug triggers, worker crashes
+... (infinite loop)
+"""
+
+# Without limits:
+# - CPU burns 100%
+# - Logs fill up with crash reports
+# - No time to investigate or fix
+# - Other processes starved of resources
+
+# With limits (max_restarts: 3, max_seconds: 5):
+# After 3 crashes in 5 seconds:
+# - Supervisor gives up and crashes
+# - PARENT supervisor restarts it
+# - Or, if at top level, application stops
+# - This is a circuit breaker!
+```
+
+### Configuring Limits
+
+```elixir
+defmodule LimitedSupervisor do
+  use Supervisor
+
+  @impl true
+  def init(_opts) do
+    children = [
+      {Worker, []}
+    ]
+
+    Supervisor.init(children,
+      strategy: :one_for_one,
+      max_restarts: 3,      # Max crashes allowed
+      max_seconds: 5        # Within this time window
+    )
+  end
+end
+```
+
+### 🤔 Choosing Limits
+
+```elixir
+# What limits would you set for each scenario?
+
+limit_scenarios = [
+  %{
+    name: "Production web handler",
+    characteristics: "Handles thousands of requests, occasional crash is ok",
+    max_restarts: nil,
+    max_seconds: nil
+  },
+  %{
+    name: "Critical payment processor",
+    characteristics: "Must be very reliable, crashes indicate serious bugs",
+    max_restarts: nil,
+    max_seconds: nil
+  },
+  %{
+    name: "Development/testing",
+    characteristics: "Want to see crashes for debugging",
+    max_restarts: nil,
+    max_seconds: nil
+  }
+]
+
+# Thinking points:
+# - Higher limits = more tolerant of transient failures
+# - Lower limits = faster detection of systematic bugs
+# - Default is 3 restarts in 5 seconds
+
+# Example answers:
+# Web handler: 10/60 - Tolerant of occasional hiccups
+# Payment processor: 1/60 - Crash once = investigate immediately
+# Development: 3/5 (default) or 1/1 - Fail fast to see bugs
+```
+
+---
+
+## Section 5: DynamicSupervisor
+
+Regular Supervisor starts children at boot. **DynamicSupervisor** starts them at runtime.
+
+### When to Use DynamicSupervisor
+
+| Supervisor | DynamicSupervisor |
+|------------|-------------------|
+| Children known at compile time | Children created at runtime |
+| Fixed set of workers | Variable number of workers |
+| One child spec per child | One child spec, many instances |
+
+### Basic DynamicSupervisor
+
+```elixir
+defmodule AgentDynamicSupervisor do
+  use DynamicSupervisor
+
+  def start_link(opts) do
+    DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def init(_opts) do
+    DynamicSupervisor.init(strategy: :one_for_one)
+  end
+
+  # API to add children at runtime
+  def start_agent(name) do
+    spec = {AgentServer, name}
+    DynamicSupervisor.start_child(__MODULE__, spec)
+  end
+
+  def stop_agent(pid) do
+    DynamicSupervisor.terminate_child(__MODULE__, pid)
+  end
+
+  def list_agents do
+    DynamicSupervisor.which_children(__MODULE__)
+  end
+end
+```
+
+### 🤔 Supervisor vs DynamicSupervisor
+
+```elixir
+# For each scenario, which would you use?
+
+supervisor_choice = [
+  {:database_pool, "Always need exactly 10 connections"},
+  {:user_sessions, "One process per logged-in user"},
+  {:core_services, "Logger, MetricsCollector, ConfigServer"},
+  {:game_rooms, "Create room when players join, destroy when empty"},
+  {:agent_framework, "Agents added/removed via API"}
+]
+
+# Your answers:
+your_choices = %{
+  database_pool: nil,     # :supervisor or :dynamic_supervisor?
+  user_sessions: nil,
+  core_services: nil,
+  game_rooms: nil,
+  agent_framework: nil
+}
+
+# Answers:
+# database_pool: :supervisor - Fixed number, known at startup
+# user_sessions: :dynamic_supervisor - Created per user login
+# core_services: :supervisor - Always these exact services
+# game_rooms: :dynamic_supervisor - Created/destroyed dynamically
+# agent_framework: :dynamic_supervisor - Agents added via API
+```
+
+---
+
+## Section 6: Converting AgentMonitor to AgentSupervisor
+
+Now let's convert your Phase 2 `AgentMonitor` to a proper OTP supervisor.
+
+### Phase 2 AgentMonitor (excerpt)
+
+```elixir
+# Your ~200 lines of manual supervision:
+defp loop(state) do
+  receive do
+    {:start_agent, name, opts, from} ->
+      case do_start_agent(name, opts) do
+        {:ok, pid, ref} ->
+          send(from, {:ok, pid})
+          loop(%{state | agents: Map.put(state.agents, name, info)})
+        {:error, reason} ->
+          send(from, {:error, reason})
+          loop(state)
+      end
+
+    {:DOWN, ref, :process, pid, reason} ->
+      case should_restart?(state.restart_policy, reason) do
+        true ->
+          {:ok, new_pid, new_ref} = do_start_agent(name, opts)
+          loop(%{state | agents: Map.put(state.agents, name, new_info)})
+        false ->
+          loop(%{state | agents: Map.delete(state.agents, name)})
+      end
+    # ... more cases
+  end
+end
+```
+
+### Phase 3 AgentSupervisor
+
+```elixir
+defmodule AgentFramework.AgentSupervisor do
+  @moduledoc """
+  DynamicSupervisor for agent processes.
+
+  This is the Phase 3 (OTP) version of Phase 2's AgentMonitor.
+  """
+  use DynamicSupervisor
+
+  # ============================================
+  # Public API
+  # ============================================
+
+  def start_link(opts \\ []) do
+    name = Keyword.get(opts, :name, __MODULE__)
+    DynamicSupervisor.start_link(__MODULE__, opts, name: name)
+  end
+
+  @doc "Start a new supervised agent."
+  def start_agent(name, opts \\ []) do
+    spec = {AgentFramework.AgentServer, {name, opts}}
+    DynamicSupervisor.start_child(__MODULE__, spec)
+  end
+
+  @doc "Stop a supervised agent."
+  def stop_agent(pid) when is_pid(pid) do
+    DynamicSupervisor.terminate_child(__MODULE__, pid)
+  end
+
+  @doc "List all supervised agents."
+  def list_agents do
+    DynamicSupervisor.which_children(__MODULE__)
+    |> Enum.map(fn {_, pid, _, _} -> pid end)
+    |> Enum.filter(&is_pid/1)
+  end
+
+  @doc "Count supervised agents."
+  def count_agents do
+    DynamicSupervisor.count_children(__MODULE__)
+  end
+
+  # ============================================
+  # Callbacks
+  # ============================================
+
+  @impl true
+  def init(_opts) do
+    DynamicSupervisor.init(
+      strategy: :one_for_one,
+      max_restarts: 5,
+      max_seconds: 60
+    )
+  end
+end
+```
+
+### 🤔 Compare the Implementations
+
+```elixir
+# Count the differences:
+
+comparison = %{
+  # Lines of code
+  agent_monitor_lines: "~200",
+  agent_supervisor_lines: "~40",
+
+  # Features in AgentMonitor that we had to implement manually
+  manual_features: [
+    "Process monitoring with Process.monitor/1",
+    "Restart logic with should_restart?/2",
+    "Exit trapping and handling",
+    "Restart counting",
+    "Max restart limiting",
+    # What else?
+  ],
+
+  # Features we get FREE with Supervisor
+  free_features: [
+    "Automatic process monitoring",
+    "Restart strategies",
+    "Max restart handling",
+    "Clean shutdown",
+    "Integration with :observer",
+    "Hot code upgrades",
+    # What else?
+  ]
+}
+
+# The ratio is roughly 5:1 - same functionality, 80% less code!
+```
+
+---
+
+## Section 7: Building a Supervision Tree
+
+Let's build a complete supervision tree for the agent framework.
+
+### The Application Module
+
+```elixir
+defmodule AgentFramework.Application do
+  @moduledoc """
+  OTP Application module for AgentFramework.
+
+  Starts the supervision tree when the application starts.
+  """
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    children = [
+      # Registry for named agents
+      {Registry, keys: :unique, name: AgentFramework.Registry},
+
+      # Dynamic supervisor for agents
+      {AgentFramework.AgentSupervisor, name: AgentFramework.AgentSupervisor}
+    ]
+
+    opts = [strategy: :one_for_one, name: AgentFramework.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
+end
+```
+
+### The Supervision Tree
+
+```
+AgentFramework.Application
+         │
+         ▼
+AgentFramework.Supervisor (strategy: :one_for_one)
+         │
+    ┌────┴────┐
+    ▼         ▼
+Registry   AgentSupervisor (DynamicSupervisor)
+                  │
+             ┌────┼────┐
+             ▼    ▼    ▼
+          Agent Agent Agent
+           (GenServers)
+```
+
+### 🤔 Why This Structure?
+
+```elixir
+# Think about why we structured it this way:
+
+tree_questions = %{
+  # 1. Why is Registry a sibling of AgentSupervisor, not a child?
+  registry_placement: "???",
+
+  # 2. Why :one_for_one for the top supervisor?
+  top_strategy: "???",
+
+  # 3. What happens if Registry crashes?
+  registry_crash: "???",
+
+  # 4. What happens if AgentSupervisor crashes?
+  supervisor_crash: "???"
+}
+
+# Answers:
+# 1. Registry and AgentSupervisor are independent - agents can exist
+#    without Registry (just use pids), and Registry can exist without agents
+
+# 2. They're independent, so no need to restart one when other crashes
+
+# 3. Registry restarts. Agents lose their names but keep running.
+#    (They'd need to re-register on restart)
+
+# 4. AgentSupervisor restarts. All agents are killed and restarted.
+#    (This is the one_for_one from DynamicSupervisor perspective)
+```
+
+---
+
+## Section 8: Interactive Exercises
+
+### Exercise 1: Implement a Simple Supervisor
+
+```elixir
+defmodule MyAppSupervisor do
+  use Supervisor
+
+  def start_link(opts) do
+    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def init(_opts) do
+    # TODO: Define children and strategy
+    # Requirements:
+    # 1. Start a ConfigServer GenServer
+    # 2. Start a LoggerServer GenServer
+    # 3. Start a WorkerPool DynamicSupervisor
+    # 4. Use appropriate strategy (think about dependencies)
+
+    children = [
+      # Your code here
+    ]
+
+    Supervisor.init(children, strategy: :???)
+  end
+end
+```
+
+### Exercise 2: Test Supervisor Behavior
+
+```elixir
+# Start the AgentSupervisor and test its behavior:
+
+# 1. Start the supervisor
+{:ok, _sup} = AgentFramework.AgentSupervisor.start_link()
+
+# 2. Start some agents
+{:ok, agent1} = AgentFramework.AgentSupervisor.start_agent("Agent-1")
+{:ok, agent2} = AgentFramework.AgentSupervisor.start_agent("Agent-2")
+
+# 3. Verify they're supervised
+AgentFramework.AgentSupervisor.count_agents()
+
+# 4. Crash one agent
+Process.exit(agent1, :kill)
+
+# 5. Wait a moment
+Process.sleep(100)
+
+# 6. Check - is it restarted?
+AgentFramework.AgentSupervisor.count_agents()
+AgentFramework.AgentSupervisor.list_agents()
+```
+
+### Exercise 3: Experiment with Restart Limits
+
+```elixir
+# Create a supervisor with strict limits and a crashy worker:
+
+defmodule CrashyWorker do
+  use GenServer
+
+  def start_link(_) do
+    GenServer.start_link(__MODULE__, nil)
+  end
+
+  @impl true
+  def init(_) do
+    # Crash after 100ms
+    Process.send_after(self(), :crash, 100)
+    {:ok, nil}
+  end
+
+  @impl true
+  def handle_info(:crash, _state) do
+    raise "Intentional crash!"
+  end
+end
+
+defmodule StrictSupervisor do
+  use Supervisor
+
+  def start_link(_) do
+    Supervisor.start_link(__MODULE__, nil)
+  end
+
+  @impl true
+  def init(_) do
+    children = [{CrashyWorker, []}]
+    Supervisor.init(children,
+      strategy: :one_for_one,
+      max_restarts: 3,
+      max_seconds: 10
+    )
+  end
+end
+
+# Start and watch what happens:
+# {:ok, sup} = StrictSupervisor.start_link([])
+# Watch the console - what do you see?
+```
+
+---
+
+## Key Takeaways
+
+1. **Supervisors build on supervisors** - Trees provide layered fault tolerance
+2. **Strategy matters** - Choose based on child dependencies
+3. **Limits are circuit breakers** - Prevent infinite restart loops
+4. **DynamicSupervisor for runtime** - When children aren't known at startup
+5. **Child specs define behavior** - Restart type, shutdown, etc.
+6. **Less code, more reliability** - OTP handles edge cases you'd miss
+
+---
+
+## What's Next?
+
+In the next session, we'll explore **OTP Distribution**:
+- Connecting multiple BEAM nodes
+- Sending messages across nodes
+- Location-transparent GenServer calls
+- Distributed agent systems
+
+You'll see how easy it is to scale your agents across multiple machines!
+
+---
+
+## Navigation
+
+← [Previous: Session 13 - GenServer](13_genserver.livemd)
+
+→ [Next: Session 15 - OTP Distribution](15_otp_distribution.livemd)

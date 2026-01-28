@@ -1,0 +1,315 @@
+# Phase 1, Session 6: Checkpoint Project
+
+## Overview
+
+This is your Phase 1 checkpoint - we'll build a working Agent module that demonstrates everything you've learned:
+
+- **Structs** for Agent and Message
+- **Pattern matching** for message handling
+- **Pipe operator** for data transformation
+- **Tests** to verify everything works
+
+---
+
+## What We're Building
+
+An `AgentFramework.Agent` module that:
+
+1. Defines an Agent struct (name, state, inbox, memory)
+2. Handles different message types via pattern matching
+3. Transforms messages through a pipeline
+4. Has comprehensive tests
+
+---
+
+## Project Structure
+
+```
+agent_framework/
+├── lib/
+│   ├── agent_framework.ex              # Public API
+│   └── agent_framework/
+│       ├── agent.ex                    # Agent struct & functions
+│       └── message.ex                  # Message struct
+├── test/
+│   ├── agent_framework/
+│   │   ├── agent_test.exs
+│   │   └── message_test.exs
+│   └── test_helper.exs
+└── mix.exs
+```
+
+---
+
+## The Code
+
+### lib/agent_framework/message.ex
+
+```elixir
+defmodule AgentFramework.Message do
+  @moduledoc """
+  Structured message type for agent communication.
+  """
+
+  @enforce_keys [:type, :id]
+  defstruct [:type, :id, :payload, :timestamp]
+
+  @type t :: %__MODULE__{
+          type: :task | :response | :error,
+          id: String.t(),
+          payload: any(),
+          timestamp: DateTime.t() | nil
+        }
+
+  @doc "Create a new message with auto-timestamp"
+  def new(type, id, payload \\ nil) do
+    %__MODULE__{
+      type: type,
+      id: id,
+      payload: payload,
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  @doc "Create a task message"
+  def task(id, action, params \\ %{}) do
+    new(:task, id, %{action: action, params: params})
+  end
+
+  @doc "Create a response message"
+  def response(id, result) do
+    new(:response, id, result)
+  end
+
+  @doc "Create an error message"
+  def error(id, reason) do
+    new(:error, id, reason)
+  end
+end
+```
+
+### lib/agent_framework/agent.ex
+
+```elixir
+defmodule AgentFramework.Agent do
+  @moduledoc """
+  Core agent struct and operations.
+
+  An agent has:
+  - name: identifier
+  - state: :idle | :busy | :waiting
+  - inbox: list of pending messages
+  - memory: map for storing context
+  """
+
+  alias AgentFramework.Message
+
+  @enforce_keys [:name]
+  defstruct [
+    :name,
+    state: :idle,
+    inbox: [],
+    memory: %{},
+    processed_count: 0
+  ]
+
+  @type t :: %__MODULE__{
+          name: String.t(),
+          state: :idle | :busy | :waiting,
+          inbox: [Message.t()],
+          memory: map(),
+          processed_count: non_neg_integer()
+        }
+
+  # ---- Constructor ----
+
+  @doc "Create a new agent with the given name"
+  def new(name) when is_binary(name) do
+    %__MODULE__{name: name}
+  end
+
+  # ---- State Transitions ----
+
+  def set_idle(agent), do: %{agent | state: :idle}
+  def set_busy(agent), do: %{agent | state: :busy}
+  def set_waiting(agent), do: %{agent | state: :waiting}
+
+  def idle?(%__MODULE__{state: :idle}), do: true
+  def idle?(_), do: false
+
+  def busy?(%__MODULE__{state: :busy}), do: true
+  def busy?(_), do: false
+
+  # ---- Inbox Operations ----
+
+  @doc "Add a message to the agent's inbox"
+  def receive_message(%__MODULE__{inbox: inbox} = agent, %Message{} = msg) do
+    %{agent | inbox: inbox ++ [msg]}
+  end
+
+  @doc "Get the next message without removing it"
+  def peek_message(%__MODULE__{inbox: []}), do: nil
+  def peek_message(%__MODULE__{inbox: [msg | _]}), do: msg
+
+  @doc "Remove and return the next message"
+  def pop_message(%__MODULE__{inbox: []} = agent) do
+    {nil, agent}
+  end
+
+  def pop_message(%__MODULE__{inbox: [msg | rest]} = agent) do
+    {msg, %{agent | inbox: rest}}
+  end
+
+  @doc "Count pending messages"
+  def inbox_count(%__MODULE__{inbox: inbox}), do: length(inbox)
+
+  # ---- Memory Operations ----
+
+  @doc "Store a value in agent memory"
+  def remember(%__MODULE__{memory: mem} = agent, key, value) do
+    %{agent | memory: Map.put(mem, key, value)}
+  end
+
+  @doc "Retrieve a value from agent memory"
+  def recall(%__MODULE__{memory: mem}, key, default \\ nil) do
+    Map.get(mem, key, default)
+  end
+
+  @doc "Clear all memory"
+  def forget_all(%__MODULE__{} = agent) do
+    %{agent | memory: %{}}
+  end
+
+  # ---- Message Processing ----
+
+  @doc "Process the next message in the inbox"
+  def process_next(%__MODULE__{inbox: []} = agent) do
+    {:empty, agent}
+  end
+
+  def process_next(%__MODULE__{} = agent) do
+    {msg, agent} = pop_message(agent)
+
+    agent
+    |> set_busy()
+    |> handle_message(msg)
+    |> increment_processed()
+    |> set_idle()
+    |> wrap_result(msg)
+  end
+
+  defp handle_message(agent, %Message{type: :task, payload: %{action: action}} = _msg) do
+    # Simulate processing - in real use, this would do actual work
+    agent
+    |> remember(:last_action, action)
+  end
+
+  defp handle_message(agent, %Message{type: :response, payload: result} = _msg) do
+    agent
+    |> remember(:last_response, result)
+  end
+
+  defp handle_message(agent, %Message{type: :error, payload: reason} = _msg) do
+    agent
+    |> remember(:last_error, reason)
+  end
+
+  defp handle_message(agent, _msg), do: agent
+
+  defp increment_processed(%__MODULE__{processed_count: n} = agent) do
+    %{agent | processed_count: n + 1}
+  end
+
+  defp wrap_result(agent, msg) do
+    {:processed, agent, msg}
+  end
+end
+```
+
+### lib/agent_framework.ex (updated)
+
+```elixir
+defmodule AgentFramework do
+  @moduledoc """
+  AgentFramework - A simple multi-agent framework in Elixir.
+
+  This is your Phase 1 checkpoint demonstrating:
+  - Structs (Agent, Message)
+  - Pattern matching (message handling)
+  - Pipe operator (processing pipeline)
+  """
+
+  alias AgentFramework.{Agent, Message}
+
+  @doc "Create a new agent"
+  defdelegate new_agent(name), to: Agent, as: :new
+
+  @doc "Create a task message"
+  defdelegate task(id, action, params \\ %{}), to: Message
+
+  @doc "Send a message to an agent"
+  def send_message(agent, message) do
+    Agent.receive_message(agent, message)
+  end
+
+  @doc "Process the next message"
+  def process(agent) do
+    Agent.process_next(agent)
+  end
+end
+```
+
+---
+
+## Running the Code
+
+After creating the files, test in IEx:
+
+```bash
+cd agent_framework
+iex -S mix
+```
+
+```elixir
+# Create an agent
+agent = AgentFramework.new_agent("Worker-1")
+
+# Create and send messages
+msg1 = AgentFramework.task("t-001", :search, %{query: "Elixir"})
+msg2 = AgentFramework.task("t-002", :analyze, %{data: [1,2,3]})
+
+agent = agent
+  |> AgentFramework.send_message(msg1)
+  |> AgentFramework.send_message(msg2)
+
+# Process messages
+{:processed, agent, _msg} = AgentFramework.process(agent)
+{:processed, agent, _msg} = AgentFramework.process(agent)
+
+# Check state
+agent.processed_count  # 2
+agent.memory           # Contains :last_action
+```
+
+---
+
+## Verification Checklist
+
+After completing this session, verify you can:
+
+- [ ] Explain pattern matching and demonstrate in IEx
+- [ ] Create and manipulate maps, lists, tuples
+- [ ] Write modules with multiple function clauses
+- [ ] Use pipe operator idiomatically
+- [ ] Have working Mix project with Agent module
+- [ ] Tests pass for checkpoint project
+
+---
+
+## What's Next: Phase 2
+
+Phase 2 will cover **OTP Fundamentals**:
+- Processes and message passing
+- GenServer for stateful processes
+- Supervisors for fault tolerance
+- Building actual concurrent agents!

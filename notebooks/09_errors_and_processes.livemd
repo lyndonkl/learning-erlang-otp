@@ -1,0 +1,885 @@
+# Session 9: Errors and Processes
+
+```elixir
+Mix.install([])
+```
+
+## Learning Goals
+
+By the end of this session, you will:
+
+1. Understand process isolation and crash containment
+2. Master links for bidirectional crash propagation
+3. Use monitors for unidirectional crash notification
+4. Implement trap_exit to handle crashes gracefully
+5. Embrace the "Let it crash" philosophy
+6. Build a basic supervisor pattern
+
+---
+
+## 1. Process Isolation Demo
+
+By default, Elixir processes are **isolated**. When one crashes, others continue running.
+
+```elixir
+# Spawn a process that will crash
+doomed = spawn(fn ->
+  Process.sleep(1000)
+  raise "I'm crashing!"
+end)
+
+IO.puts("Spawned process: #{inspect(doomed)}")
+IO.puts("Parent still running: #{inspect(self())}")
+
+# Wait for crash
+Process.sleep(1500)
+
+IO.puts("Is doomed process alive? #{Process.alive?(doomed)}")
+IO.puts("Is parent alive? #{Process.alive?(self())}")
+```
+
+The child crashed, but we (the parent) kept running. The crash was **contained**.
+
+### What Happens When a Process Crashes?
+
+When a process terminates, it has an **exit reason**:
+
+* `:normal` - Process finished normally
+* `:shutdown` - Ordered shutdown (by supervisor)
+* `{:shutdown, term}` - Shutdown with additional info
+* Any other term - Abnormal termination (crash)
+
+```elixir
+# Spawn processes with different exit scenarios
+normal = spawn(fn ->
+  :ok  # Just returns, exits normally
+end)
+
+explicit_exit = spawn(fn ->
+  exit(:some_reason)  # Explicit exit
+end)
+
+crash = spawn(fn ->
+  raise "boom!"  # Exception causes abnormal exit
+end)
+
+Process.sleep(500)
+
+# All exited, but with different reasons
+IO.puts("All processes have exited")
+```
+
+---
+
+## 2. Links: Bidirectional Crash Propagation
+
+**Links** connect processes so that when one crashes, **all linked processes crash too**.
+
+### spawn_link vs spawn
+
+```elixir
+defmodule LinkDemo do
+  @moduledoc """
+  Demonstrates the difference between spawn and spawn_link.
+  """
+
+  def spawn_demo do
+    IO.puts("=== Using spawn (no link) ===")
+
+    # Child crashes but we survive
+    child = spawn(fn ->
+      Process.sleep(500)
+      raise "Child crashing!"
+    end)
+
+    Process.sleep(1000)
+    IO.puts("Parent survived! Child: #{Process.alive?(child)}")
+    :ok
+  end
+
+  # WARNING: This will crash the calling process!
+  def spawn_link_demo do
+    IO.puts("=== Using spawn_link (linked) ===")
+
+    # Child crashes and takes us down with it
+    _child = spawn_link(fn ->
+      Process.sleep(500)
+      raise "Child crashing!"
+    end)
+
+    Process.sleep(1000)
+    IO.puts("This line will NEVER execute!")
+  end
+end
+
+# Safe to run - parent survives
+LinkDemo.spawn_demo()
+```
+
+Let's safely observe the link behavior by running in a separate process:
+
+```elixir
+# Run the link demo in an isolated process
+observer = spawn(fn ->
+  receive do
+    :run_link_demo ->
+      # This process will die when its child dies
+      IO.puts("Observer: Starting link demo...")
+
+      _child = spawn_link(fn ->
+        Process.sleep(500)
+        IO.puts("Child: About to crash!")
+        exit(:child_crashed)
+      end)
+
+      Process.sleep(2000)
+      IO.puts("Observer: This won't print")
+  end
+end)
+
+send(observer, :run_link_demo)
+Process.sleep(1000)
+
+IO.puts("Main process: Observer alive? #{Process.alive?(observer)}")
+IO.puts("Main process: I'm still running!")
+```
+
+### Linking Existing Processes
+
+You can link after spawning with `Process.link/1`:
+
+```elixir
+# Start a process
+pid = spawn(fn ->
+  receive do
+    :crash -> exit(:intentional_crash)
+  after
+    10000 -> :ok
+  end
+end)
+
+# Link to it (bidirectional)
+# Process.link(pid)  # <- Uncomment to test (will crash this cell)
+
+IO.puts("Process #{inspect(pid)} is alive: #{Process.alive?(pid)}")
+```
+
+### Link Diagram
+
+```
+Process A <====LINK====> Process B
+
+A crashes:
+  → B receives exit signal
+  → B crashes (unless trapping exits)
+
+B crashes:
+  → A receives exit signal
+  → A crashes (unless trapping exits)
+
+Links are BIDIRECTIONAL and AT MOST ONE per pair.
+```
+
+---
+
+## 3. Monitors: Unidirectional Crash Notification
+
+**Monitors** let you watch a process without being affected by its crashes. They're **unidirectional** - only the monitoring process receives notifications.
+
+### spawn_monitor
+
+```elixir
+# spawn_monitor returns {pid, reference}
+{pid, ref} = spawn_monitor(fn ->
+  Process.sleep(500)
+  exit(:some_reason)
+end)
+
+IO.puts("Spawned: #{inspect(pid)}")
+IO.puts("Monitor ref: #{inspect(ref)}")
+
+# Wait for the DOWN message
+receive do
+  {:DOWN, ^ref, :process, ^pid, reason} ->
+    IO.puts("Process #{inspect(pid)} died with reason: #{inspect(reason)}")
+end
+
+IO.puts("We're still alive!")
+```
+
+### Process.monitor
+
+```elixir
+# Monitor an existing process
+worker = spawn(fn ->
+  receive do
+    :work -> IO.puts("Working...")
+    :crash -> exit(:worker_failed)
+  end
+end)
+
+# Start monitoring
+ref = Process.monitor(worker)
+IO.puts("Monitoring #{inspect(worker)} with ref #{inspect(ref)}")
+
+# Make it crash
+send(worker, :crash)
+
+# Receive notification
+receive do
+  {:DOWN, ^ref, :process, ^pid, reason} ->
+    IO.puts("Worker died: #{inspect(reason)}")
+after
+  1000 -> IO.puts("Timeout waiting for DOWN")
+end
+```
+
+### Multiple Monitors
+
+Unlike links (at most one per pair), you can have **multiple monitors**:
+
+```elixir
+target = spawn(fn ->
+  receive do
+    :stop -> :ok
+  end
+end)
+
+# Multiple monitors on same target
+ref1 = Process.monitor(target)
+ref2 = Process.monitor(target)
+ref3 = Process.monitor(target)
+
+IO.puts("Created 3 monitors: #{inspect([ref1, ref2, ref3])}")
+
+send(target, :stop)
+
+# We'll receive 3 DOWN messages!
+for i <- 1..3 do
+  receive do
+    {:DOWN, ref, :process, ^target, reason} ->
+      IO.puts("Monitor #{i} notified: #{inspect(reason)}")
+  after
+    500 -> IO.puts("Monitor #{i} timed out")
+  end
+end
+```
+
+### Demonitoring
+
+You can stop monitoring with `Process.demonitor/2`:
+
+```elixir
+target = spawn(fn ->
+  Process.sleep(5000)
+end)
+
+ref = Process.monitor(target)
+IO.puts("Monitoring with #{inspect(ref)}")
+
+# Stop monitoring (flush any existing DOWN message)
+Process.demonitor(ref, [:flush])
+IO.puts("Demonitored")
+
+# Kill the target - we won't receive notification
+Process.exit(target, :kill)
+
+receive do
+  {:DOWN, ^ref, :process, _, _} ->
+    IO.puts("Got DOWN - shouldn't happen!")
+after
+  500 -> IO.puts("No DOWN received (as expected)")
+end
+```
+
+### Links vs Monitors Summary
+
+| Feature      | Links               | Monitors                 |
+| ------------ | ------------------- | ------------------------ |
+| Direction    | Bidirectional       | Unidirectional           |
+| On crash     | Both processes die  | Monitor receives message |
+| Max per pair | 1                   | Unlimited                |
+| Removal      | `Process.unlink/1`  | `Process.demonitor/1`    |
+| Use case     | Dependent processes | Supervisor observation   |
+
+---
+
+## 4. Trapping Exits
+
+By default, linked processes crash together. **Trap exit** converts exit signals into messages.
+
+### Process.flag(:trap_exit, true)
+
+```elixir
+defmodule TrapExitDemo do
+  def start do
+    spawn(fn ->
+      # Convert exit signals to messages
+      Process.flag(:trap_exit, true)
+      IO.puts("Trap exit enabled for #{inspect(self())}")
+
+      # Spawn linked child
+      child = spawn_link(fn ->
+        Process.sleep(500)
+        exit(:child_exited)
+      end)
+
+      IO.puts("Linked to child: #{inspect(child)}")
+
+      # Instead of crashing, we receive a message
+      receive do
+        {:EXIT, ^child, reason} ->
+          IO.puts("Received EXIT from child: #{inspect(reason)}")
+          IO.puts("But I'm still alive!")
+      end
+    end)
+  end
+end
+
+TrapExitDemo.start()
+Process.sleep(1000)
+```
+
+### EXIT Message Format
+
+When trapping exits, you receive messages like:
+
+```elixir
+{:EXIT, from_pid, reason}
+```
+
+Where `reason` is:
+
+* `:normal` - Process exited normally
+* `:shutdown` - Ordered shutdown
+* `{:shutdown, term}` - Shutdown with info
+* `:killed` - Process was killed with `exit(pid, :kill)`
+* Other - Exception or explicit exit reason
+
+```elixir
+defmodule ExitReasons do
+  def demo do
+    Process.flag(:trap_exit, true)
+
+    # Normal exit
+    spawn_link(fn -> :ok end)
+
+    # Explicit shutdown
+    spawn_link(fn -> exit(:shutdown) end)
+
+    # Custom reason
+    spawn_link(fn -> exit({:error, :something_wrong}) end)
+
+    # Exception becomes exit
+    spawn_link(fn -> raise "boom!" end)
+
+    # Collect all exit messages
+    Process.sleep(100)
+    collect_exits([])
+  end
+
+  defp collect_exits(exits) do
+    receive do
+      {:EXIT, pid, reason} ->
+        collect_exits([{pid, reason} | exits])
+    after
+      100 -> Enum.reverse(exits)
+    end
+  end
+end
+
+ExitReasons.demo()
+|> Enum.each(fn {pid, reason} ->
+  IO.puts("#{inspect(pid)} exited with: #{inspect(reason)}")
+end)
+```
+
+### The Special :kill Signal
+
+`:kill` is a **brutal exit signal** that **cannot be trapped**:
+
+```elixir
+# This process traps exits
+trapper = spawn(fn ->
+  Process.flag(:trap_exit, true)
+
+  receive do
+    {:EXIT, _, reason} ->
+      IO.puts("Trapped exit: #{inspect(reason)}")
+    after
+      5000 -> IO.puts("Timeout")
+  end
+end)
+
+# Normal exit signals are trapped
+Process.exit(trapper, :normal)
+Process.sleep(100)
+IO.puts("After :normal - alive? #{Process.alive?(trapper)}")
+
+# Start a new trapper
+trapper2 = spawn(fn ->
+  Process.flag(:trap_exit, true)
+
+  receive do
+    {:EXIT, _, reason} ->
+      IO.puts("Trapped exit: #{inspect(reason)}")
+    after
+      5000 -> IO.puts("Timeout")
+  end
+end)
+
+# :kill cannot be trapped!
+Process.exit(trapper2, :kill)
+Process.sleep(100)
+IO.puts("After :kill - alive? #{Process.alive?(trapper2)}")
+```
+
+**Note**: When `:kill` propagates through links, it becomes `:killed` to prevent cascading brutal kills.
+
+---
+
+## 5. The "Let It Crash" Philosophy
+
+Erlang/Elixir's approach to error handling is fundamentally different from most languages.
+
+### Traditional Approach
+
+```python
+# Python/Java/etc: Defensive programming
+def process_data(data):
+    try:
+        result = parse(data)
+        if result is None:
+            return Error("Parse failed")
+
+        validated = validate(result)
+        if not validated:
+            return Error("Validation failed")
+
+        return transform(validated)
+    except ParseError as e:
+        log(e)
+        return Error("Parse error")
+    except ValidationError as e:
+        log(e)
+        return Error("Validation error")
+    except Exception as e:
+        log(e)
+        return Error("Unknown error")
+```
+
+### Elixir "Let It Crash" Approach
+
+```elixir
+defmodule DataProcessor do
+  def process_data(data) do
+    data
+    |> parse()
+    |> validate()
+    |> transform()
+  end
+
+  # No defensive error handling!
+  # If parse/validate/transform fail, the process crashes.
+  # A supervisor will restart it in a known good state.
+end
+```
+
+### Why "Let It Crash" Works
+
+1. **Processes are cheap** - Restarting costs microseconds
+2. **Isolation** - Crash only affects one process
+3. **Fresh state** - Restart returns to known good state
+4. **Supervisor trees** - Automated restart and recovery
+5. **Simpler code** - No complex error handling everywhere
+
+### When NOT to Let It Crash
+
+* External resources (files, connections) - need cleanup
+* User-facing errors - need friendly messages
+* Business logic errors - not crashes, just different outcomes
+
+---
+
+## 6. Building a Simple Supervisor Pattern
+
+Let's build a basic supervisor that restarts crashed workers.
+
+```elixir
+defmodule SimpleSupervisor do
+  @moduledoc """
+  A basic supervisor that monitors and restarts workers.
+  This is a simplified version of what OTP's Supervisor does.
+  """
+
+  def start_link(worker_module, worker_arg) do
+    spawn_link(fn ->
+      Process.flag(:trap_exit, true)
+      loop(worker_module, worker_arg, nil)
+    end)
+  end
+
+  defp loop(worker_module, worker_arg, worker_pid) do
+    # Start worker if not running
+    worker_pid = if worker_pid == nil or not Process.alive?(worker_pid) do
+      IO.puts("[Supervisor] Starting worker...")
+      pid = spawn_link(fn -> worker_module.run(worker_arg) end)
+      IO.puts("[Supervisor] Worker started: #{inspect(pid)}")
+      pid
+    else
+      worker_pid
+    end
+
+    receive do
+      {:EXIT, ^worker_pid, :normal} ->
+        IO.puts("[Supervisor] Worker exited normally")
+        loop(worker_module, worker_arg, nil)
+
+      {:EXIT, ^worker_pid, :shutdown} ->
+        IO.puts("[Supervisor] Worker shutdown")
+        loop(worker_module, worker_arg, nil)
+
+      {:EXIT, ^worker_pid, reason} ->
+        IO.puts("[Supervisor] Worker crashed: #{inspect(reason)}")
+        IO.puts("[Supervisor] Restarting...")
+        Process.sleep(100)  # Brief delay before restart
+        loop(worker_module, worker_arg, nil)
+
+      {:get_worker, from} ->
+        send(from, {:worker, worker_pid})
+        loop(worker_module, worker_arg, worker_pid)
+
+      :stop ->
+        IO.puts("[Supervisor] Stopping...")
+        if worker_pid, do: Process.exit(worker_pid, :shutdown)
+        :ok
+
+      other ->
+        IO.puts("[Supervisor] Unknown: #{inspect(other)}")
+        loop(worker_module, worker_arg, worker_pid)
+    end
+  end
+end
+```
+
+### Test Worker
+
+```elixir
+defmodule UnstableWorker do
+  @moduledoc """
+  A worker that might crash randomly.
+  """
+
+  def run(name) do
+    IO.puts("[Worker #{name}] Starting...")
+    loop(name, 0)
+  end
+
+  defp loop(name, count) do
+    receive do
+      :work ->
+        IO.puts("[Worker #{name}] Working... (#{count} tasks done)")
+        # Random crash!
+        if :rand.uniform(3) == 1 do
+          IO.puts("[Worker #{name}] Oh no, crashing!")
+          exit(:random_failure)
+        end
+        loop(name, count + 1)
+
+      {:status, from} ->
+        send(from, {:status, name, count})
+        loop(name, count)
+
+      :crash ->
+        exit(:commanded_crash)
+
+      :stop ->
+        IO.puts("[Worker #{name}] Stopping normally")
+        :normal
+
+    after
+      5000 ->
+        IO.puts("[Worker #{name}] Idle...")
+        loop(name, count)
+    end
+  end
+end
+```
+
+### Running the Supervisor
+
+```elixir
+# Start supervisor with worker
+sup = SimpleSupervisor.start_link(UnstableWorker, "Worker-1")
+Process.sleep(200)
+
+# Get the worker pid
+send(sup, {:get_worker, self()})
+{:worker, worker} = receive do
+  {:worker, pid} -> {:worker, pid}
+end
+
+IO.puts("Worker PID: #{inspect(worker)}")
+
+# Send some work - might crash!
+for _ <- 1..10 do
+  send(sup, {:get_worker, self()})
+  {:worker, w} = receive do {:worker, pid} -> {:worker, pid} end
+  send(w, :work)
+  Process.sleep(300)
+end
+
+# Force a crash
+send(sup, {:get_worker, self()})
+{:worker, w} = receive do {:worker, pid} -> {:worker, pid} end
+send(w, :crash)
+Process.sleep(500)
+
+# Worker should be restarted
+send(sup, {:get_worker, self()})
+{:worker, new_worker} = receive do {:worker, pid} -> {:worker, pid} end
+IO.puts("New worker after crash: #{inspect(new_worker)}")
+
+# Clean shutdown
+send(sup, :stop)
+```
+
+---
+
+## 7. Building Fault-Tolerant Agent
+
+Let's apply these concepts to our agent framework:
+
+```elixir
+defmodule FaultTolerantAgent do
+  @moduledoc """
+  An agent process with crash recovery via supervisor.
+  """
+
+  defstruct [:name, :pid, :monitor_ref, state: :idle, memory: %{}, inbox: []]
+
+  # --- Supervisor ---
+
+  def start_supervised(name) do
+    spawn(fn ->
+      Process.flag(:trap_exit, true)
+      supervisor_loop(name, nil)
+    end)
+  end
+
+  defp supervisor_loop(name, agent_pid) do
+    agent_pid = ensure_agent_running(name, agent_pid)
+
+    receive do
+      {:EXIT, ^agent_pid, :normal} ->
+        IO.puts("[Supervisor] Agent #{name} exited normally")
+        supervisor_loop(name, nil)
+
+      {:EXIT, ^agent_pid, reason} ->
+        IO.puts("[Supervisor] Agent #{name} crashed: #{inspect(reason)}")
+        IO.puts("[Supervisor] Restarting agent...")
+        Process.sleep(100)
+        supervisor_loop(name, nil)
+
+      {:get_agent, from} ->
+        send(from, {:agent_pid, agent_pid})
+        supervisor_loop(name, agent_pid)
+
+      :shutdown ->
+        IO.puts("[Supervisor] Shutting down agent #{name}")
+        Process.exit(agent_pid, :shutdown)
+        :ok
+
+      msg ->
+        # Forward to agent
+        send(agent_pid, msg)
+        supervisor_loop(name, agent_pid)
+    end
+  end
+
+  defp ensure_agent_running(name, nil) do
+    pid = spawn_link(fn -> agent_loop(%__MODULE__{name: name}) end)
+    IO.puts("[Supervisor] Started agent #{name}: #{inspect(pid)}")
+    pid
+  end
+  defp ensure_agent_running(_name, pid), do: pid
+
+  # --- Agent Process ---
+
+  defp agent_loop(state) do
+    receive do
+      {:remember, key, value} ->
+        agent_loop(%{state | memory: Map.put(state.memory, key, value)})
+
+      {:recall, key, from} ->
+        send(from, {:recalled, Map.get(state.memory, key)})
+        agent_loop(state)
+
+      {:task, task} ->
+        IO.puts("[Agent #{state.name}] Received task: #{inspect(task)}")
+        agent_loop(%{state | inbox: state.inbox ++ [task]})
+
+      {:process_next, from} ->
+        case state.inbox do
+          [] ->
+            send(from, {:empty})
+            agent_loop(state)
+
+          [task | rest] ->
+            # Might crash during processing!
+            result = process_task(state, task)
+            send(from, {:processed, task, result})
+            agent_loop(%{state | inbox: rest})
+        end
+
+      {:force_crash, reason} ->
+        IO.puts("[Agent #{state.name}] Forced crash: #{reason}")
+        exit(reason)
+
+      :stop ->
+        IO.puts("[Agent #{state.name}] Normal stop")
+        :ok
+
+      other ->
+        IO.puts("[Agent #{state.name}] Unknown: #{inspect(other)}")
+        agent_loop(state)
+    end
+  end
+
+  defp process_task(state, %{action: :search, params: params}) do
+    query = Map.get(params, :query, "")
+    IO.puts("[Agent #{state.name}] Searching: #{query}")
+    {:ok, "Results for #{query}"}
+  end
+
+  defp process_task(state, %{action: :risky}) do
+    IO.puts("[Agent #{state.name}] Doing risky operation...")
+    # 50% chance of crash
+    if :rand.uniform(2) == 1 do
+      exit(:risky_operation_failed)
+    end
+    {:ok, "Risky operation succeeded"}
+  end
+
+  defp process_task(state, task) do
+    {:error, {:unknown_task, task}}
+  end
+end
+```
+
+### Test Fault Tolerance
+
+```elixir
+# Start supervised agent
+sup = FaultTolerantAgent.start_supervised("Research-Agent")
+Process.sleep(200)
+
+# Get agent pid
+send(sup, {:get_agent, self()})
+{:agent_pid, agent} = receive do msg -> msg end
+IO.puts("Agent PID: #{inspect(agent)}")
+
+# Store memory
+send(sup, {:remember, :topic, "Fault Tolerance"})
+
+# Queue safe task
+send(sup, {:task, %{action: :search, params: %{query: "OTP"}}})
+send(sup, {:process_next, self()})
+receive do
+  {:processed, _, result} -> IO.puts("Result: #{inspect(result)}")
+  {:empty} -> IO.puts("Empty inbox")
+end
+
+# Force a crash
+send(sup, {:force_crash, :test_crash})
+Process.sleep(500)
+
+# Agent should be restarted
+send(sup, {:get_agent, self()})
+{:agent_pid, new_agent} = receive do msg -> msg end
+IO.puts("New agent after crash: #{inspect(new_agent)}")
+IO.puts("Same PID? #{agent == new_agent}")
+
+# Clean shutdown
+send(sup, :shutdown)
+```
+
+---
+
+## 8. Summary
+
+### Key Concepts
+
+| Concept               | Purpose     | Effect                            |
+| --------------------- | ----------- | --------------------------------- |
+| **Process Isolation** | Containment | Crashes don't spread by default   |
+| **Links**             | Dependency  | Crashes propagate bidirectionally |
+| **Monitors**          | Observation | Get notified of crashes           |
+| **Trap Exit**         | Recovery    | Convert crashes to messages       |
+| **"Let It Crash"**    | Philosophy  | Fail fast, restart fresh          |
+
+### When to Use What
+
+```elixir
+# Link: Dependent processes that should fail together
+spawn_link(fn -> dependent_work() end)
+
+# Monitor: Watch a process without coupling
+ref = Process.monitor(worker_pid)
+
+# Trap exit: Supervisor-like behavior
+Process.flag(:trap_exit, true)
+spawn_link(fn -> supervised_work() end)
+receive do
+  {:EXIT, pid, reason} -> restart(pid)
+end
+```
+
+### Error Handling Strategy
+
+1. **Normal code**: Don't handle errors, let them crash
+2. **Boundaries** (user input, external APIs): Validate and handle
+3. **Supervisors**: Monitor and restart crashed processes
+4. **State recovery**: Keep minimal state, rebuild on restart
+
+---
+
+## 9. Practice Exercises
+
+### Exercise 1: Restart Counter
+
+Modify SimpleSupervisor to track restart count and stop after 5 restarts:
+
+```elixir
+# Implement "max restarts" logic
+```
+
+### Exercise 2: Worker Pool
+
+Create a supervisor that manages multiple workers:
+
+```elixir
+# Implement a pool of N workers
+# When one crashes, restart just that one
+# Provide :get_available_worker to get an idle worker
+```
+
+### Exercise 3: Graceful Shutdown
+
+Implement a two-phase shutdown:
+
+1. Stop accepting new tasks
+2. Wait for current tasks to complete
+3. Then exit
+
+---
+
+## Next Session Preview
+
+In **Session 10: Designing Concurrent Applications**, we'll cover:
+
+* Process architecture design
+* Named processes and Registry
+* Message protocol design
+* Coordinator patterns
+* Building a complete multi-agent system

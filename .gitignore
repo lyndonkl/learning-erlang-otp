@@ -1,0 +1,34 @@
+# Elixir/Mix
+/_build/
+/deps/
+*.beam
+*.ez
+.fetch
+
+# Generated files
+erl_crash.dump
+*.ez
+*.tar
+
+# Elixir LS
+.elixir_ls/
+
+# Editor
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+/cover/
+
+# Dialyzer
+/priv/plts/
+
+# Livebook
+.livebook/

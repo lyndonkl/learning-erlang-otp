@@ -1,0 +1,603 @@
+# Phase 1, Session 4: Modules & Structs
+
+## Overview
+
+Modules are how you organize code in Elixir. Structs are how you define typed, structured data with defaults and compile-time guarantees.
+
+**What you'll learn:**
+
+* Module definition and namespacing
+* Module attributes (`@moduledoc`, `@doc`, constants)
+* Structs with `defstruct`
+* Composition: `alias`, `import`, `require`, `use`
+
+---
+
+## Livebook Notes
+
+**Important**:
+
+1. Run cells in order - structs must be defined before use
+2. If you get "module already defined" errors, restart the runtime: Runtime menu → Reconnect and reevaluate
+3. All modules are namespaced with `S4.` (Session 4) to avoid conflicts
+
+---
+
+## Why This Matters for Your Agent Framework
+
+Your agent framework will be organized into modules:
+
+* `Agent` - Core agent struct and behavior
+* `Agent.MessageHandler` - Message processing logic
+* `Agent.State` - State management
+* `Agent.Supervisor` - Process supervision (later in OTP)
+
+Structs will define your core data:
+
+* Agent state with known fields and defaults
+* Message types with enforced structure
+
+---
+
+## Section 1: Module Basics
+
+### 1.1 Defining a Module
+
+```elixir
+defmodule S4.Greeter do
+  def hello(name) do
+    "Hello, #{name}!"
+  end
+
+  def goodbye(name) do
+    "Goodbye, #{name}!"
+  end
+end
+```
+
+```elixir
+{S4.Greeter.hello("World"), S4.Greeter.goodbye("World")}
+```
+
+### 1.2 Nested Modules
+
+Use dot notation for hierarchy. These are just naming conventions - no actual nesting:
+
+```elixir
+defmodule S4.Agents.Researcher do
+  def describe, do: "A research agent that searches and summarizes"
+end
+
+defmodule S4.Agents.Analyzer do
+  def describe, do: "An analysis agent that processes data"
+end
+```
+
+```elixir
+{S4.Agents.Researcher.describe(), S4.Agents.Analyzer.describe()}
+```
+
+### 1.3 Module Organization Pattern
+
+```elixir
+defmodule S4.SimpleAgent do
+  # Public API at the top
+  def new(name), do: %{name: name, state: :idle}
+  def process(agent, message), do: do_process(agent, message)
+
+  # Private helpers at the bottom
+  defp do_process(agent, {:task, _, _}), do: %{agent | state: :busy}
+  defp do_process(agent, _), do: agent
+end
+```
+
+```elixir
+S4.SimpleAgent.new("Worker") |> S4.SimpleAgent.process({:task, "001", %{}})
+```
+
+---
+
+## Section 2: Module Attributes
+
+Module attributes are compile-time constants and metadata.
+
+### 2.1 Documentation Attributes
+
+```elixir
+defmodule S4.Calculator do
+  @moduledoc """
+  A simple calculator module.
+  Provides basic arithmetic operations.
+  """
+
+  @doc "Adds two numbers together."
+  def add(a, b), do: a + b
+
+  @doc "Multiplies two numbers."
+  def multiply(a, b), do: a * b
+end
+```
+
+```elixir
+{S4.Calculator.add(2, 3), S4.Calculator.multiply(4, 5)}
+```
+
+### 2.2 Constants with `@`
+
+```elixir
+defmodule S4.Config do
+  @default_timeout 5000
+  @max_retries 3
+  @supported_actions [:search, :analyze, :summarize]
+
+  def default_timeout, do: @default_timeout
+  def max_retries, do: @max_retries
+  def supported_actions, do: @supported_actions
+  def valid_action?(action), do: action in @supported_actions
+end
+```
+
+```elixir
+{S4.Config.default_timeout(), S4.Config.max_retries(), S4.Config.valid_action?(:search)}
+```
+
+### 2.3 Compile-Time vs Runtime
+
+Module attributes are evaluated at compile time:
+
+```elixir
+defmodule S4.Timestamps do
+  @compiled_at DateTime.utc_now()  # Set ONCE at compile time
+
+  def compiled_at, do: @compiled_at
+  def current_time, do: DateTime.utc_now()  # Evaluated each call
+end
+```
+
+```elixir
+# compiled_at always returns the same value
+{S4.Timestamps.compiled_at(), S4.Timestamps.current_time()}
+```
+
+---
+
+## Section 3: Structs
+
+Structs are maps with:
+
+* A defined set of fields
+* Default values
+* Compile-time checks for field names
+
+### 3.1 Basic Struct Definition
+
+```elixir
+defmodule S4.User do
+  defstruct name: nil, email: nil, role: :user
+end
+```
+
+```elixir
+# Use the struct (run after cell above)
+user1 = %S4.User{}
+user2 = %S4.User{name: "Alice", email: "alice@example.com"}
+user3 = %S4.User{name: "Bob", role: :admin}
+
+{user1, user2, user3}
+```
+
+### 3.2 Struct vs Map
+
+```elixir
+defmodule S4.Person do
+  defstruct [:name, :age]
+end
+```
+
+```elixir
+# Structs ARE maps (with a special __struct__ key)
+person = %S4.Person{name: "Alice", age: 30}
+is_map(person)
+```
+
+```elixir
+# But maps don't match struct patterns
+person = %S4.Person{name: "Alice", age: 30}
+
+# This function only accepts S4.Person structs
+accepts_person = fn %S4.Person{name: n} -> "Person: #{n}" end
+
+accepts_person.(person)
+# accepts_person.(%{name: "Bob", age: 25}) would fail
+```
+
+### 3.3 Enforcing Required Fields
+
+```elixir
+defmodule S4.Task do
+  @enforce_keys [:id, :action]
+  defstruct [:id, :action, status: :pending, result: nil]
+end
+```
+
+```elixir
+# This works - required keys provided
+valid_task = %S4.Task{id: "001", action: :search}
+
+# This would fail:
+# %S4.Task{action: :search}  # Missing :id
+
+valid_task
+```
+
+### 3.4 Updating Structs
+
+```elixir
+defmodule S4.Agent do
+  defstruct name: nil, state: :idle, inbox: [], processed_count: 0
+end
+```
+
+```elixir
+agent = %S4.Agent{name: "Worker-1"}
+
+# Update with pipe syntax (same as maps)
+updated = %{agent | state: :busy, processed_count: 1}
+
+{agent, updated}
+```
+
+### 3.5 Pattern Matching with Structs
+
+```elixir
+defmodule S4.Message do
+  defstruct [:type, :id, :payload]
+end
+
+defmodule S4.MessageProcessor do
+  def process(%S4.Message{type: :task, id: id, payload: p}) do
+    "Processing task #{id}: #{inspect(p)}"
+  end
+
+  def process(%S4.Message{type: :response, id: id, payload: p}) do
+    "Got response for #{id}: #{inspect(p)}"
+  end
+
+  def process(%S4.Message{} = msg) do
+    "Unknown message type: #{inspect(msg.type)}"
+  end
+end
+```
+
+```elixir
+[
+  S4.MessageProcessor.process(%S4.Message{type: :task, id: "001", payload: %{action: :search}}),
+  S4.MessageProcessor.process(%S4.Message{type: :response, id: "001", payload: {:ok, "done"}}),
+  S4.MessageProcessor.process(%S4.Message{type: :unknown, id: "002", payload: nil})
+]
+```
+
+### 3.6 Struct with Functions
+
+Best practice: define helper functions in the same module as the struct:
+
+```elixir
+defmodule S4.AgentState do
+  @enforce_keys [:name]
+  defstruct [:name, state: :idle, inbox: [], memory: %{}, processed_count: 0]
+
+  def new(name) when is_binary(name), do: %__MODULE__{name: name}
+
+  # State transitions
+  def set_idle(agent), do: %{agent | state: :idle}
+  def set_busy(agent), do: %{agent | state: :busy}
+  def set_waiting(agent), do: %{agent | state: :waiting}
+
+  # Inbox operations
+  def add_message(%__MODULE__{inbox: inbox} = agent, message) do
+    %{agent | inbox: [message | inbox]}
+  end
+
+  def pop_message(%__MODULE__{inbox: []} = agent), do: {nil, agent}
+  def pop_message(%__MODULE__{inbox: [msg | rest]} = agent) do
+    {msg, %{agent | inbox: rest}}
+  end
+
+  # Memory operations
+  def remember(%__MODULE__{memory: mem} = agent, key, value) do
+    %{agent | memory: Map.put(mem, key, value)}
+  end
+
+  def recall(%__MODULE__{memory: mem}, key, default \\ nil) do
+    Map.get(mem, key, default)
+  end
+
+  def increment_processed(%__MODULE__{processed_count: n} = agent) do
+    %{agent | processed_count: n + 1}
+  end
+end
+```
+
+```elixir
+# Usage with pipes
+agent =
+  S4.AgentState.new("Researcher")
+  |> S4.AgentState.add_message({:task, "001", %{action: :search}})
+  |> S4.AgentState.add_message({:task, "002", %{action: :analyze}})
+  |> S4.AgentState.set_busy()
+  |> S4.AgentState.remember(:context, "Researching Elixir")
+
+{msg, agent} = S4.AgentState.pop_message(agent)
+
+{msg, agent, S4.AgentState.recall(agent, :context)}
+```
+
+---
+
+## Section 4: Module Composition
+
+### 4.1 `alias` - Shorten Module Names
+
+```elixir
+defmodule S4.Services.Auth do
+  def authenticate(user, _pass), do: {:ok, "#{user} authenticated"}
+end
+
+defmodule S4.Web.LoginController do
+  alias S4.Services.Auth
+
+  def login(user, pass), do: Auth.authenticate(user, pass)
+end
+```
+
+```elixir
+S4.Web.LoginController.login("alice", "secret")
+```
+
+```elixir
+# Alias with custom name
+defmodule S4.Example do
+  alias S4.Services.Auth, as: A
+
+  def demo, do: A.authenticate("bob", "pass")
+end
+
+S4.Example.demo()
+```
+
+### 4.2 `import` - Bring Functions Into Scope
+
+```elixir
+defmodule S4.ListOps do
+  import Enum, only: [map: 2, filter: 2]
+
+  def double_evens(list) do
+    list
+    |> filter(&(rem(&1, 2) == 0))
+    |> map(&(&1 * 2))
+  end
+end
+```
+
+```elixir
+S4.ListOps.double_evens([1, 2, 3, 4, 5, 6])
+```
+
+```elixir
+defmodule S4.StringOps do
+  import String, except: [length: 1]
+
+  def process(text), do: text |> trim() |> upcase() |> split(" ")
+end
+
+S4.StringOps.process("  hello world  ")
+```
+
+### 4.3 `require` - Load Macros
+
+```elixir
+defmodule S4.LogExample do
+  require Logger
+
+  def do_something do
+    Logger.info("Starting operation")
+    result = 1 + 1
+    Logger.debug("Result: #{result}")
+    result
+  end
+end
+
+S4.LogExample.do_something()
+```
+
+### 4.4 `use` - Inject Code
+
+`use` calls a module's `__using__` macro to inject code:
+
+```elixir
+defmodule S4.Greeting do
+  defmacro __using__(opts) do
+    greeting = Keyword.get(opts, :greeting, "Hello")
+
+    quote do
+      def greet(name), do: "#{unquote(greeting)}, #{name}!"
+    end
+  end
+end
+
+defmodule S4.EnglishGreeter do
+  use S4.Greeting, greeting: "Hello"
+end
+
+defmodule S4.SpanishGreeter do
+  use S4.Greeting, greeting: "Hola"
+end
+```
+
+```elixir
+{S4.EnglishGreeter.greet("World"), S4.SpanishGreeter.greet("Mundo")}
+```
+
+---
+
+## Section 5: Putting It All Together
+
+### Complete Agent Module Structure
+
+```elixir
+defmodule S4.Agent.Message do
+  @enforce_keys [:type, :id]
+  defstruct [:type, :id, :payload, timestamp: nil]
+
+  def new(type, id, payload \\ nil) do
+    %__MODULE__{type: type, id: id, payload: payload, timestamp: DateTime.utc_now()}
+  end
+
+  def task(id, action, params \\ %{}), do: new(:task, id, %{action: action, params: params})
+  def response(id, result), do: new(:response, id, result)
+end
+
+defmodule S4.Agent.Core do
+  alias S4.Agent.Message
+
+  @enforce_keys [:name]
+  defstruct [:name, state: :idle, inbox: [], outbox: [], memory: %{}]
+
+  def new(name), do: %__MODULE__{name: name}
+
+  def receive_message(%__MODULE__{inbox: inbox} = agent, %Message{} = msg) do
+    %{agent | inbox: inbox ++ [msg]}
+  end
+
+  def process_next(%__MODULE__{inbox: []} = agent), do: {:empty, agent}
+  def process_next(%__MODULE__{inbox: [msg | rest]} = agent) do
+    agent = %{agent | inbox: rest, state: :processing}
+    result = handle_message(msg)
+    {:processed, %{agent | state: :idle}, result}
+  end
+
+  defp handle_message(%Message{type: :task, id: id, payload: %{action: action}}) do
+    Message.response(id, {:ok, "Completed #{action}"})
+  end
+
+  defp handle_message(%Message{id: id}) do
+    Message.response(id, {:error, "Unknown message type"})
+  end
+end
+```
+
+```elixir
+alias S4.Agent.{Core, Message}
+
+agent =
+  Core.new("Worker-1")
+  |> Core.receive_message(Message.task("t-001", :search, %{query: "Elixir"}))
+  |> Core.receive_message(Message.task("t-002", :analyze, %{data: [1, 2, 3]}))
+
+{status, updated_agent, response} = Core.process_next(agent)
+
+{status, response, length(updated_agent.inbox)}
+```
+
+---
+
+## Section 6: Hands-On Exercises
+
+### Exercise 1: Create a Config Module
+
+```elixir
+defmodule S4.MyConfig do
+  @default_timeout 5000
+  @max_retries 3
+  @log_level :info
+
+  def get(:timeout), do: @default_timeout
+  def get(:max_retries), do: @max_retries
+  def get(:log_level), do: @log_level
+  def get(_), do: nil
+end
+
+{S4.MyConfig.get(:timeout), S4.MyConfig.get(:max_retries), S4.MyConfig.get(:unknown)}
+```
+
+### Exercise 2: Define a Task Struct
+
+```elixir
+defmodule S4.MyTask do
+  @enforce_keys [:id, :action]
+  defstruct [:id, :action, status: :pending, result: nil, created_at: nil]
+
+  def new(id, action) do
+    %__MODULE__{id: id, action: action, created_at: DateTime.utc_now()}
+  end
+
+  def start(%__MODULE__{} = task), do: %{task | status: :running}
+  def complete(%__MODULE__{} = task, result), do: %{task | status: :completed, result: {:ok, result}}
+  def fail(%__MODULE__{} = task, reason), do: %{task | status: :failed, result: {:error, reason}}
+  def completed?(%__MODULE__{status: :completed}), do: true
+  def completed?(_), do: false
+end
+```
+
+```elixir
+task =
+  S4.MyTask.new("task-001", :search)
+  |> S4.MyTask.start()
+  |> S4.MyTask.complete("Found 5 results")
+
+{task, S4.MyTask.completed?(task)}
+```
+
+### Exercise 3: Module Composition
+
+```elixir
+defmodule S4.Utils.Str do
+  def normalize(text), do: text |> String.trim() |> String.downcase()
+end
+
+defmodule S4.Utils.Lst do
+  def compact(list), do: Enum.reject(list, &is_nil/1)
+end
+
+defmodule S4.MyProcessor do
+  alias S4.Utils.{Str, Lst}
+  import Enum, only: [map: 2]
+
+  def process(items) do
+    items |> Lst.compact() |> map(&Str.normalize/1)
+  end
+end
+
+S4.MyProcessor.process(["  HELLO  ", nil, "  WORLD  ", nil, "  ELIXIR  "])
+```
+
+---
+
+## Summary
+
+| Concept          | Syntax                   | Purpose                    |
+| ---------------- | ------------------------ | -------------------------- |
+| Module           | `defmodule Name do`      | Organize functions         |
+| Nested module    | `defmodule A.B.C do`     | Hierarchical namespacing   |
+| Module attribute | `@name value`            | Compile-time constants     |
+| Documentation    | `@moduledoc`, `@doc`     | Document modules/functions |
+| Struct           | `defstruct [:field]`     | Typed maps with defaults   |
+| Enforce keys     | `@enforce_keys [:field]` | Required struct fields     |
+| `alias`          | `alias Long.Name`        | Shorten module names       |
+| `import`         | `import Module`          | Bring functions into scope |
+| `require`        | `require Module`         | Load macros                |
+| `use`            | `use Module`             | Inject code via macros     |
+
+## Key Takeaways for Agent Framework
+
+1. **Organize by responsibility** - Separate modules for State, Messages, Handlers
+2. **Use structs for data** - `%Agent{}`, `%Message{}` with enforced keys
+3. **`__MODULE__`** - Reference current module (useful in structs)
+4. **Functions with structs** - Keep data and operations together
+5. **Alias for clarity** - Clean up long module references
+
+---
+
+## Next Session
+
+**Session 5: Mix & Project Setup** - Create a real Elixir project with Mix, manage dependencies, and set up tests.

@@ -1,0 +1,679 @@
+# Phase 1, Session 3: Functions & Pipe Operator
+
+## Overview
+
+Functions are first-class citizens in Elixir. Combined with pattern matching, they become incredibly powerful for building clean, declarative code.
+
+**What you'll learn:**
+
+* Anonymous functions (`fn -> end` and `&` shorthand)
+* Named functions in modules (`def`, `defp`)
+* Pattern matching in function heads
+* Guards for conditional logic
+* The pipe operator `|>` for elegant data flow
+
+---
+
+## Why This Matters for Your Agent Framework
+
+Your agents will be built from functions that:
+
+* Handle different message types (pattern matching in function heads)
+* Transform data through pipelines (pipe operator)
+* Dispatch to private helper functions
+* Use guards to validate inputs
+
+---
+
+## Section 1: Anonymous Functions
+
+Anonymous functions are values you can pass around, store in variables, and call later.
+
+### 1.1 Basic Syntax
+
+```elixir
+# Define an anonymous function
+add = fn (a, b) -> a + b end
+
+# Call it with .() syntax (the dot is required!)
+add.(2, 3)
+```
+
+```elixir
+# Parentheses are optional in the definition
+multiply = fn a, b -> a * b end
+
+multiply.(4, 5)
+```
+
+```elixir
+# Multi-line anonymous function
+greet = fn name ->
+  message = "Hello, #{name}!"
+  String.upcase(message)
+end
+
+greet.("world")
+```
+
+### 1.2 Pattern Matching in Anonymous Functions
+
+Anonymous functions can have multiple clauses with pattern matching:
+
+```elixir
+# Different behavior based on input structure
+handle_result = fn
+  {:ok, value} -> "Success: #{value}"
+  {:error, reason} -> "Error: #{reason}"
+  _ -> "Unknown format"
+end
+
+{handle_result.({:ok, "data"}), handle_result.({:error, :timeout})}
+```
+
+```elixir
+# Agent message handler as anonymous function
+process_message = fn
+  {:task, id, %{action: :search}} -> "Searching (#{id})"
+  {:task, id, %{action: :analyze}} -> "Analyzing (#{id})"
+  {:response, id, result} -> "Got response for #{id}"
+  other -> "Unknown: #{inspect(other)}"
+end
+
+process_message.({:task, "001", %{action: :search}})
+```
+
+### 1.3 The Capture Operator `&`
+
+The `&` operator creates shorthand anonymous functions:
+
+```elixir
+# These are equivalent:
+add_long = fn a, b -> a + b end
+add_short = &(&1 + &2)
+
+{add_long.(1, 2), add_short.(1, 2)}
+```
+
+```elixir
+# &1, &2, etc. refer to the 1st, 2nd argument
+multiply = &(&1 * &2)
+square = &(&1 * &1)
+
+{multiply.(3, 4), square.(5)}
+```
+
+```elixir
+# Capture existing functions
+upcase = &String.upcase/1
+split = &String.split/2
+
+{upcase.("hello"), split.("a,b,c", ",")}
+```
+
+### 1.4 Functions as First-Class Values
+
+```elixir
+# Pass functions to other functions
+numbers = [1, 2, 3, 4, 5]
+
+# Using anonymous function
+Enum.map(numbers, fn x -> x * 2 end)
+```
+
+```elixir
+# Using capture shorthand
+Enum.map([1, 2, 3, 4, 5], &(&1 * 2))
+```
+
+```elixir
+# Store functions in data structures
+operations = %{
+  double: &(&1 * 2),
+  square: &(&1 * &1),
+  negate: &(-&1)
+}
+
+{operations.double.(5), operations.square.(4), operations.negate.(3)}
+```
+
+---
+
+## Section 2: Named Functions
+
+Named functions live inside modules and are the primary way to organize code.
+
+### 2.1 Basic Module and Function
+
+```elixir
+defmodule Greeter do
+  def hello(name) do
+    "Hello, #{name}!"
+  end
+end
+
+Greeter.hello("Elixir")
+```
+
+### 2.2 Function Arity
+
+Functions are identified by name AND arity (number of arguments). `hello/1` and `hello/2` are different functions:
+
+```elixir
+defmodule Math do
+  # add/2 - takes two arguments
+  def add(a, b) do
+    a + b
+  end
+
+  # add/3 - takes three arguments (different function!)
+  def add(a, b, c) do
+    a + b + c
+  end
+end
+
+{Math.add(1, 2), Math.add(1, 2, 3)}
+```
+
+### 2.3 Default Arguments
+
+Use `\\` to specify default values:
+
+```elixir
+defmodule Greeting do
+  def say_hello(name, greeting \\ "Hello") do
+    "#{greeting}, #{name}!"
+  end
+end
+
+{Greeting.say_hello("Alice"), Greeting.say_hello("Bob", "Hi")}
+```
+
+### 2.4 Private Functions with `defp`
+
+Private functions can only be called from within their module:
+
+```elixir
+defmodule Calculator do
+  # Public function
+  def calculate(a, b, operation) do
+    case operation do
+      :add -> do_add(a, b)
+      :multiply -> do_multiply(a, b)
+      _ -> {:error, :unknown_operation}
+    end
+  end
+
+  # Private functions - not accessible outside module
+  defp do_add(a, b), do: a + b
+  defp do_multiply(a, b), do: a * b
+end
+
+Calculator.calculate(5, 3, :add)
+# Calculator.do_add(5, 3)  # Would fail - private function
+```
+
+### 2.5 Single-Line Syntax
+
+For short functions, use the `do:` shorthand:
+
+```elixir
+defmodule QuickMath do
+  def double(x), do: x * 2
+  def square(x), do: x * x
+  def add(a, b), do: a + b
+end
+
+{QuickMath.double(5), QuickMath.square(4)}
+```
+
+---
+
+## Section 3: Pattern Matching in Function Heads
+
+This is where Elixir shines. Instead of `if/else` inside functions, define multiple clauses that pattern match.
+
+### 3.1 Multiple Function Clauses
+
+```elixir
+defmodule Responder do
+  def respond({:ok, data}) do
+    "Success: #{inspect(data)}"
+  end
+
+  def respond({:error, reason}) do
+    "Error: #{reason}"
+  end
+
+  def respond(_other) do
+    "Unknown response format"
+  end
+end
+
+{
+  Responder.respond({:ok, [1, 2, 3]}),
+  Responder.respond({:error, :timeout}),
+  Responder.respond("something else")
+}
+```
+
+### 3.2 Extracting Data in Function Heads
+
+```elixir
+defmodule UserHandler do
+  # Extract name from map AND keep the full map
+  def greet(%{name: name} = user) do
+    "Hello #{name}! Your data: #{inspect(user)}"
+  end
+end
+
+UserHandler.greet(%{name: "Alice", age: 30, role: :admin})
+```
+
+### 3.3 Agent Message Handler
+
+```elixir
+defmodule MessageHandler do
+  def handle({:task, id, %{action: :search, query: query}}) do
+    {:processing, id, "Searching for: #{query}"}
+  end
+
+  def handle({:task, id, %{action: :summarize, content: content}}) do
+    {:processing, id, "Summarizing #{String.length(content)} chars"}
+  end
+
+  def handle({:response, id, {:ok, result}}) do
+    {:completed, id, result}
+  end
+
+  def handle({:response, id, {:error, reason}}) do
+    {:failed, id, reason}
+  end
+
+  def handle(unknown) do
+    {:unknown, nil, "Unrecognized message: #{inspect(unknown)}"}
+  end
+end
+
+# Test different message types
+[
+  MessageHandler.handle({:task, "001", %{action: :search, query: "Elixir"}}),
+  MessageHandler.handle({:task, "002", %{action: :summarize, content: "Long text..."}}),
+  MessageHandler.handle({:response, "001", {:ok, "Found 5 results"}}),
+  MessageHandler.handle({:response, "002", {:error, :timeout}})
+]
+```
+
+---
+
+## Section 4: Guards
+
+Guards add conditions beyond pattern matching. They appear after `when`.
+
+### 4.1 Basic Guards
+
+```elixir
+defmodule TypeChecker do
+  def check(x) when is_integer(x), do: "integer"
+  def check(x) when is_float(x), do: "float"
+  def check(x) when is_binary(x), do: "string"
+  def check(x) when is_atom(x), do: "atom"
+  def check(x) when is_list(x), do: "list"
+  def check(x) when is_map(x), do: "map"
+  def check(_), do: "other"
+end
+
+[
+  TypeChecker.check(42),
+  TypeChecker.check(3.14),
+  TypeChecker.check("hello"),
+  TypeChecker.check(:atom),
+  TypeChecker.check([1, 2]),
+  TypeChecker.check(%{a: 1})
+]
+```
+
+### 4.2 Common Guard Functions
+
+```elixir
+defmodule Validator do
+  # Numeric comparisons
+  def category(n) when n < 0, do: :negative
+  def category(n) when n == 0, do: :zero
+  def category(n) when n > 0 and n < 10, do: :small
+  def category(n) when n >= 10, do: :large
+
+  # Length checks (for lists and strings)
+  def size(list) when length(list) == 0, do: :empty
+  def size(list) when length(list) < 5, do: :small
+  def size(list) when length(list) >= 5, do: :large
+
+  # Nil checks
+  def present?(nil), do: false
+  def present?(_), do: true
+end
+
+{
+  Validator.category(-5),
+  Validator.category(0),
+  Validator.category(7),
+  Validator.category(100),
+  Validator.size([]),
+  Validator.size([1, 2]),
+  Validator.present?(nil),
+  Validator.present?("value")
+}
+```
+
+### 4.3 Guards in Agent Context
+
+```elixir
+defmodule AgentValidator do
+  def validate_message({:task, id, payload})
+      when is_binary(id) and is_map(payload) do
+    {:ok, :valid_task}
+  end
+
+  def validate_message({:task, _id, _payload}) do
+    {:error, "Task ID must be string, payload must be map"}
+  end
+
+  def validate_message({:response, id, _result})
+      when is_binary(id) do
+    {:ok, :valid_response}
+  end
+
+  def validate_message(_) do
+    {:error, "Unknown message format"}
+  end
+end
+
+[
+  AgentValidator.validate_message({:task, "001", %{action: :search}}),
+  AgentValidator.validate_message({:task, 123, %{action: :search}}),
+  AgentValidator.validate_message({:response, "001", {:ok, "done"}}),
+  AgentValidator.validate_message(:random)
+]
+```
+
+---
+
+## Section 5: The Pipe Operator `|>`
+
+The pipe operator passes the result of one expression as the **first argument** to the next function.
+
+### 5.1 The Problem: Nested Calls
+
+```elixir
+# Without pipes - read inside-out, hard to follow
+String.split(String.upcase(String.trim("  hello world  ")), " ")
+```
+
+### 5.2 The Solution: Pipes
+
+```elixir
+# With pipes - read left-to-right, clear data flow
+"  hello world  "
+|> String.trim()
+|> String.upcase()
+|> String.split(" ")
+```
+
+### 5.3 How Pipes Work
+
+The left side becomes the **first argument** of the right side:
+
+```elixir
+# These are equivalent:
+String.split("hello world", " ")
+
+"hello world" |> String.split(" ")
+```
+
+```elixir
+# Multi-argument functions - piped value is FIRST arg
+# String.replace(string, pattern, replacement)
+"hello"
+|> String.replace("l", "L")
+|> String.upcase()
+```
+
+### 5.4 Pipes with Your Own Functions
+
+```elixir
+defmodule TextProcessor do
+  def normalize(text) do
+    text
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  def word_count(text) do
+    text
+    |> String.split()
+    |> length()
+  end
+
+  def process(text) do
+    text
+    |> normalize()
+    |> then(fn t -> {t, word_count(t)} end)
+  end
+end
+
+TextProcessor.process("  Hello WORLD from Elixir  ")
+```
+
+### 5.5 Pipes with Enum
+
+Pipes shine with list transformations:
+
+```elixir
+[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+|> Enum.filter(&(rem(&1, 2) == 0))  # Keep even numbers
+|> Enum.map(&(&1 * &1))             # Square them
+|> Enum.sum()                        # Sum the results
+```
+
+```elixir
+# Agent inbox processing example
+inbox = [
+  {:task, "003", %{priority: :low}},
+  {:task, "001", %{priority: :high}},
+  {:task, "002", %{priority: :high}},
+  {:task, "004", %{priority: :medium}}
+]
+
+inbox
+|> Enum.filter(fn {:task, _, %{priority: p}} -> p == :high end)
+|> Enum.map(fn {:task, id, _} -> id end)
+```
+
+### 5.6 Important: Always Use Parentheses
+
+```elixir
+# GOOD - parentheses make it clear
+"hello"
+|> String.replace("l", "L")
+|> String.upcase()
+
+# BAD - ambiguous without parentheses (don't do this)
+# "hello" |> String.replace "l", "L"
+```
+
+---
+
+## Section 6: Putting It All Together
+
+### 6.1 Complete Message Processing Pipeline
+
+```elixir
+defmodule Agent do
+  # Main entry point
+  def process(message) do
+    message
+    |> validate()
+    |> route()
+    |> format_response()
+  end
+
+  # Validation with pattern matching + guards
+  defp validate({:task, id, payload})
+       when is_binary(id) and is_map(payload) do
+    {:ok, {:task, id, payload}}
+  end
+
+  defp validate({:response, id, result}) when is_binary(id) do
+    {:ok, {:response, id, result}}
+  end
+
+  defp validate(invalid) do
+    {:error, {:invalid_message, invalid}}
+  end
+
+  # Routing based on message type
+  defp route({:ok, {:task, id, %{action: action} = payload}}) do
+    {:routed, :task_handler, {id, action, payload}}
+  end
+
+  defp route({:ok, {:response, id, result}}) do
+    {:routed, :response_handler, {id, result}}
+  end
+
+  defp route({:error, _} = error), do: error
+
+  # Format final response
+  defp format_response({:routed, handler, data}) do
+    %{status: :ok, handler: handler, data: data}
+  end
+
+  defp format_response({:error, reason}) do
+    %{status: :error, reason: reason}
+  end
+end
+
+# Test the pipeline
+[
+  Agent.process({:task, "001", %{action: :search, query: "test"}}),
+  Agent.process({:response, "001", {:ok, "done"}}),
+  Agent.process({:invalid, :message})
+]
+```
+
+---
+
+## Section 7: Hands-On Exercises
+
+### Exercise 1: Anonymous Function with Multiple Clauses
+
+Create an anonymous function that calculates shipping cost based on weight:
+
+```elixir
+shipping_cost = fn
+  weight when weight <= 1 -> 5.00
+  weight when weight <= 5 -> 10.00
+  weight when weight <= 20 -> 25.00
+  _weight -> 50.00
+end
+
+{shipping_cost.(0.5), shipping_cost.(3), shipping_cost.(15), shipping_cost.(50)}
+```
+
+### Exercise 2: Named Function with Pattern Matching
+
+Create a module that formats different types of log entries:
+
+```elixir
+defmodule Logger do
+  def format({:info, message}), do: "[INFO] #{message}"
+  def format({:warn, message}), do: "[WARN] #{message}"
+  def format({:error, message, stacktrace}), do: "[ERROR] #{message}\n#{stacktrace}"
+  def format(message) when is_binary(message), do: "[LOG] #{message}"
+end
+
+[
+  Logger.format({:info, "Server started"}),
+  Logger.format({:warn, "High memory usage"}),
+  Logger.format({:error, "Connection failed", "at line 42"}),
+  Logger.format("Plain message")
+]
+```
+
+### Exercise 3: Build a Processing Pipeline
+
+Transform a list of user data:
+
+```elixir
+users = [
+  %{name: "alice", age: 25, active: true},
+  %{name: "bob", age: 17, active: true},
+  %{name: "charlie", age: 30, active: false},
+  %{name: "diana", age: 22, active: true}
+]
+
+# Pipeline: filter active adults (18+), capitalize names, sort by age
+users
+|> Enum.filter(fn u -> u.active and u.age >= 18 end)
+|> Enum.map(fn u -> %{u | name: String.capitalize(u.name)} end)
+|> Enum.sort_by(fn u -> u.age end)
+```
+
+### Exercise 4: Agent State Transformer
+
+Create functions that transform agent state through a pipeline:
+
+```elixir
+defmodule AgentState do
+  def new(name) do
+    %{name: name, state: :idle, inbox: [], processed: 0}
+  end
+
+  def add_task(agent, task) do
+    %{agent | inbox: [task | agent.inbox]}
+  end
+
+  def set_busy(agent) do
+    %{agent | state: :busy}
+  end
+
+  def increment_processed(agent) do
+    %{agent | processed: agent.processed + 1}
+  end
+end
+
+# Build up agent state with pipeline
+AgentState.new("Worker-1")
+|> AgentState.add_task({:task, "001", %{action: :search}})
+|> AgentState.add_task({:task, "002", %{action: :analyze}})
+|> AgentState.set_busy()
+|> AgentState.increment_processed()
+```
+
+---
+
+## Summary
+
+| Concept      | Syntax            | Purpose                        |
+| ------------ | ----------------- | ------------------------------ |
+| Anonymous fn | `fn a -> a end`   | Inline, passable functions     |
+| Capture      | `&(&1 + &2)`      | Shorthand for simple functions |
+| Named fn     | `def name(args)`  | Module-level functions         |
+| Private fn   | `defp name(args)` | Internal helper functions      |
+| Multi-clause | Multiple `def`    | Pattern match on arguments     |
+| Guards       | `when condition`  | Add conditions beyond patterns |
+
+| Pipe         | `|>`              | Chain function calls cleanly   |
+
+## Key Takeaways for Agent Framework
+
+1. **Message handlers** use multi-clause functions with pattern matching
+2. **Private helpers** (`defp`) encapsulate internal logic
+3. **Guards** validate message structure and types
+4. **Pipes** create clear data transformation flows
+5. **Capture syntax** (`&`) is great for Enum operations
+
+---
+
+## Next Session
+
+**Session 4: Modules & Structs** - Organize code into modules and define typed data structures with structs.

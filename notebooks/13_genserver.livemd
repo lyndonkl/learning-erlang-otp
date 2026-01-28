@@ -1,0 +1,919 @@
+# Session 13: GenServer - The Generic Server
+
+```elixir
+Mix.install([])
+```
+
+## Introduction
+
+In Session 12, you learned that OTP formalizes the patterns you built manually
+in Phase 2. Now it's time to transform your `ProcessAgent` into a proper
+**GenServer** - the workhorse of OTP applications.
+
+GenServer (Generic Server) implements the client-server pattern by separating
+generic server logic from your application-specific behavior.
+
+### Sources for This Session
+
+This session synthesizes concepts from:
+- [Elixir School - OTP Concurrency](https://elixirschool.com/en/lessons/advanced/otp_concurrency)
+- [Learn You Some Erlang - Clients and Servers](https://learnyousomeerlang.com/clients-and-servers)
+
+## Learning Goals
+
+By the end of this session, you'll be able to:
+- Implement all GenServer callbacks correctly
+- Convert your ProcessAgent to a GenServer
+- Choose between synchronous (call) and asynchronous (cast) patterns
+- Handle system messages with handle_info
+- Understand GenServer state management
+
+---
+
+## Section 1: GenServer Architecture
+
+### 🤔 Opening Reflection
+
+Before we dive in, think about your Phase 2 `ProcessAgent.loop/1`:
+
+```elixir
+# In your ProcessAgent, you had:
+# 1. A receive block that waits for messages
+# 2. Pattern matching on message types
+# 3. State threaded through recursive calls
+# 4. Some messages needed replies, others didn't
+
+# Question: What would happen if you forgot to call loop(new_state) in a branch?
+# Question: What if you sent the wrong format back to a caller expecting a reply?
+
+your_answers = """
+Forgot loop(new_state): ???
+Wrong reply format: ???
+"""
+
+# Answer:
+# - Forgot loop: Process dies silently after handling one message!
+# - Wrong format: Caller hangs forever waiting for the expected response pattern
+```
+
+### The Client-Server Split
+
+GenServer enforces a clean separation:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Client API                               │
+│  (Functions other processes call - runs in CALLER'S process) │
+├─────────────────────────────────────────────────────────────┤
+│         GenServer.call/cast - Message Boundary              │
+├─────────────────────────────────────────────────────────────┤
+│                    Server Callbacks                          │
+│  (Handle messages - runs in SERVER'S process)                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 🤔 Understanding the Boundary
+
+```elixir
+# Consider this GenServer module:
+defmodule MyServer do
+  use GenServer
+
+  # Client API
+  def get_value(pid) do
+    IO.puts("In get_value, my pid is: #{inspect(self())}")
+    GenServer.call(pid, :get)
+  end
+
+  # Server Callback
+  @impl true
+  def handle_call(:get, _from, state) do
+    IO.puts("In handle_call, my pid is: #{inspect(state.server_pid)}")
+    {:reply, state.value, state}
+  end
+end
+
+# Question: When you call MyServer.get_value(server_pid), which process runs each part?
+
+boundary_understanding = %{
+  get_value_runs_in: nil,    # :caller or :server?
+  genserver_call_runs_in: nil, # :caller or :server?
+  handle_call_runs_in: nil   # :caller or :server?
+}
+
+# Answer:
+# get_value_runs_in: :caller - Client API runs in the calling process
+# genserver_call_runs_in: :caller - It sends a message and waits
+# handle_call_runs_in: :server - Callbacks run in the GenServer process
+```
+
+This boundary is crucial for understanding timeouts, blocking, and performance!
+
+---
+
+## Section 2: The Callback Contract
+
+GenServer requires you to implement specific callbacks. Let's explore each one.
+
+### Required vs Optional Callbacks
+
+```elixir
+# Let's see what GenServer expects:
+IO.puts("Required callbacks:")
+IO.inspect(GenServer.behaviour_info(:callbacks))
+
+IO.puts("\nOptional callbacks:")
+IO.inspect(GenServer.behaviour_info(:optional_callbacks))
+```
+
+### The Complete Callback Set
+
+| Callback | When Called | Must Return |
+|----------|-------------|-------------|
+| `init/1` | Process starts | `{:ok, state}` or `{:stop, reason}` |
+| `handle_call/3` | Sync request arrives | `{:reply, response, state}` |
+| `handle_cast/2` | Async message arrives | `{:noreply, state}` |
+| `handle_info/2` | Other message arrives | `{:noreply, state}` |
+| `terminate/2` | Process stopping | Any (ignored) |
+| `code_change/3` | Hot code upgrade | `{:ok, new_state}` |
+
+### 🤔 Why These Specific Callbacks?
+
+```elixir
+# Think about why GenServer has THIS specific set of callbacks:
+
+# 1. Why is init/1 separate from start_link?
+init_purpose = """
+Your answer: ???
+
+Hint: What if initialization takes time or might fail?
+"""
+
+# 2. Why are handle_call and handle_cast separate?
+call_vs_cast = """
+Your answer: ???
+
+Hint: What information does handle_call have that handle_cast doesn't?
+"""
+
+# 3. Why does handle_info exist at all?
+handle_info_purpose = """
+Your answer: ???
+
+Hint: What sends messages that AREN'T GenServer.call or GenServer.cast?
+"""
+
+# Answers:
+# 1. init/1 runs in the new process, can do setup that should be isolated
+#    If it fails, the starter process gets {:error, reason} cleanly
+# 2. handle_call has `from` and must reply; cast doesn't need to
+#    This makes the contract explicit and prevents bugs
+# 3. handle_info catches: monitors (:DOWN), timers, linked process exits,
+#    messages from non-GenServer code, etc.
+```
+
+---
+
+## Section 3: Implementing Each Callback
+
+### init/1 - Process Initialization
+
+```elixir
+defmodule CounterServer do
+  use GenServer
+
+  # Client API
+  def start_link(initial_count) do
+    GenServer.start_link(__MODULE__, initial_count)
+  end
+
+  # Server Callbacks
+  @impl true
+  def init(initial_count) when is_integer(initial_count) do
+    # This runs in the NEW process
+    # Caller blocks until init completes
+    {:ok, %{count: initial_count, started_at: DateTime.utc_now()}}
+  end
+
+  def init(_invalid) do
+    {:stop, :invalid_initial_value}
+  end
+end
+```
+
+### 🤔 init/1 Return Values
+
+```elixir
+# init/1 can return several things. Match each return to its effect:
+
+init_returns = %{
+  "{:ok, state}" => "???",
+  "{:ok, state, timeout}" => "???",
+  "{:ok, state, :hibernate}" => "???",
+  "{:stop, reason}" => "???",
+  ":ignore" => "???"
+}
+
+# Fill in your answers, then check:
+# "{:ok, state}" => "Start normally with this state"
+# "{:ok, state, timeout}" => "Start, but send :timeout to handle_info after N ms"
+# "{:ok, state, :hibernate}" => "Start, then hibernate to save memory"
+# "{:stop, reason}" => "Don't start, return {:error, reason} to caller"
+# ":ignore" => "Don't start, return :ignore to caller (used for conditional starts)"
+```
+
+### handle_call/3 - Synchronous Requests
+
+From Learn You Some Erlang:
+> Execution is blocked in the process that spawned the server while waiting
+> for confirmation from init.
+
+Similarly, `handle_call` blocks the caller until you reply.
+
+```elixir
+defmodule CounterServer do
+  use GenServer
+
+  # Client API
+  def get(pid), do: GenServer.call(pid, :get)
+  def increment(pid), do: GenServer.call(pid, :increment)
+  def add(pid, n), do: GenServer.call(pid, {:add, n})
+
+  # Server Callbacks
+  @impl true
+  def handle_call(:get, _from, state) do
+    {:reply, state.count, state}
+  end
+
+  def handle_call(:increment, _from, state) do
+    new_count = state.count + 1
+    {:reply, new_count, %{state | count: new_count}}
+  end
+
+  def handle_call({:add, n}, _from, state) do
+    new_count = state.count + n
+    {:reply, new_count, %{state | count: new_count}}
+  end
+end
+```
+
+### 🤔 The `from` Parameter
+
+```elixir
+# handle_call receives a `from` parameter. What is it?
+
+# Let's explore:
+def handle_call(:who_called, from, state) do
+  IO.inspect(from, label: "from parameter")
+  {:reply, from, state}
+end
+
+# Run this and observe:
+# from = {#PID<0.123.0>, #Reference<0.456.789.0>}
+
+# Question: Why is `from` a tuple of {pid, reference}?
+# Question: When would you use `from` directly instead of just returning {:reply, ...}?
+
+from_purpose = """
+Your answers: ???
+"""
+
+# Answer:
+# - The reference is a unique tag to match the reply to the request
+# - You'd use `from` with GenServer.reply/2 for async replies:
+#   def handle_call(:slow_operation, from, state) do
+#     spawn(fn ->
+#       result = do_slow_thing()
+#       GenServer.reply(from, result)
+#     end)
+#     {:noreply, state}  # Don't block!
+#   end
+```
+
+### handle_cast/2 - Asynchronous Messages
+
+```elixir
+defmodule CounterServer do
+  use GenServer
+
+  # Client API - async versions
+  def increment_async(pid), do: GenServer.cast(pid, :increment)
+  def reset_async(pid), do: GenServer.cast(pid, :reset)
+
+  # Server Callbacks
+  @impl true
+  def handle_cast(:increment, state) do
+    {:noreply, %{state | count: state.count + 1}}
+  end
+
+  def handle_cast(:reset, state) do
+    {:noreply, %{state | count: 0}}
+  end
+end
+```
+
+### 🤔 Call vs Cast Decision
+
+```elixir
+# For each operation, decide: should it be call or cast?
+
+operations = [
+  {:get_current_count, "Client needs to display the count"},
+  {:increment_counter, "Just add 1, don't need result"},
+  {:set_to_value, "Set count to specific value, confirm it worked"},
+  {:log_event, "Record something happened"},
+  {:validate_input, "Check if input is valid, return true/false"}
+]
+
+# Your reasoning:
+your_decisions = %{
+  get_current_count: nil,  # :call or :cast?
+  increment_counter: nil,
+  set_to_value: nil,
+  log_event: nil,
+  validate_input: nil
+}
+
+# Answers with reasoning:
+# get_current_count: :call - Need the value back
+# increment_counter: :cast - Fire and forget is fine
+# set_to_value: Could be either! :call if you need confirmation, :cast if you trust it
+# log_event: :cast - Logging shouldn't block the caller
+# validate_input: :call - MUST get the validation result back
+
+# Key insight: If you need the result, use call. If you don't, cast is faster.
+```
+
+### handle_info/2 - Everything Else
+
+`handle_info/2` catches all messages that aren't from `GenServer.call/cast`:
+
+```elixir
+defmodule MonitoredServer do
+  use GenServer
+
+  def start_link(monitored_pid) do
+    GenServer.start_link(__MODULE__, monitored_pid)
+  end
+
+  @impl true
+  def init(monitored_pid) do
+    # Set up a monitor - we'll get :DOWN messages in handle_info
+    ref = Process.monitor(monitored_pid)
+    {:ok, %{monitored: monitored_pid, ref: ref, alive: true}}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    if ref == state.ref do
+      IO.puts("Monitored process #{inspect(pid)} died: #{inspect(reason)}")
+      {:noreply, %{state | alive: false}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(:timeout, state) do
+    # Called when {:ok, state, timeout_ms} was returned
+    IO.puts("Timeout fired!")
+    {:noreply, state}
+  end
+
+  def handle_info(msg, state) do
+    # Catch-all for unexpected messages
+    IO.puts("Unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+end
+```
+
+### 🤔 What Arrives in handle_info?
+
+```elixir
+# List all the types of messages that arrive in handle_info:
+
+handle_info_receives = [
+  # 1. ???
+  # 2. ???
+  # 3. ???
+  # 4. ???
+  # 5. ???
+]
+
+# Answers:
+# 1. :DOWN messages from Process.monitor/1
+# 2. {:EXIT, pid, reason} when trapping exits
+# 3. :timeout from {:ok, state, timeout} or {:noreply, state, timeout}
+# 4. Messages from Process.send_after/3
+# 5. Raw messages sent with send/2 (not GenServer.call/cast)
+# 6. Messages from external systems (ports, NIFs)
+```
+
+### terminate/2 - Cleanup
+
+From Learn You Some Erlang:
+> Whatever was done in init/1 should have its opposite in terminate/2.
+
+```elixir
+defmodule ResourceServer do
+  use GenServer
+
+  @impl true
+  def init(_) do
+    # Open a resource
+    file = File.open!("/tmp/server.log", [:write])
+    {:ok, %{file: file}}
+  end
+
+  @impl true
+  def terminate(reason, state) do
+    # Clean up the resource
+    IO.puts("Terminating because: #{inspect(reason)}")
+    File.close(state.file)
+    :ok
+  end
+end
+```
+
+### 🤔 When Does terminate/2 Run?
+
+```elixir
+# terminate/2 is called in these scenarios - but not all of them!
+
+scenarios = [
+  {:return_stop, "handle_* returns {:stop, reason, state}"},
+  {:parent_shutdown, "Supervisor tells child to stop"},
+  {:normal_exit, "GenServer.stop(pid, :normal)"},
+  {:crash, "Unhandled exception in handle_*"},
+  {:kill, "Process.exit(pid, :kill)"},
+  {:linked_crash, "Linked process crashes (not trapping exits)"}
+]
+
+# For each, will terminate/2 be called? true or false?
+terminate_called = %{
+  return_stop: nil,
+  parent_shutdown: nil,
+  normal_exit: nil,
+  crash: nil,
+  kill: nil,
+  linked_crash: nil
+}
+
+# Answers:
+# return_stop: true - This is the normal way to stop
+# parent_shutdown: true - Supervisor sends shutdown, terminate runs
+# normal_exit: true - Clean shutdown
+# crash: true - OTP catches it, calls terminate
+# kill: FALSE - :kill cannot be caught or handled!
+# linked_crash: FALSE (unless trapping exits) - Process dies immediately
+```
+
+---
+
+## Section 4: Converting ProcessAgent to AgentServer
+
+Now let's apply everything to convert your Phase 2 `ProcessAgent` into a proper GenServer.
+
+### Side-by-Side Comparison
+
+```elixir
+# Phase 2: ProcessAgent.loop/1
+defp loop(state) do
+  receive do
+    {:get_state, from} ->
+      send(from, {:state, state})
+      loop(state)
+
+    {:remember, key, value} ->
+      new_memory = Map.put(state.memory, key, value)
+      loop(%{state | memory: new_memory})
+
+    {:recall, key, from} ->
+      value = Map.get(state.memory, key)
+      send(from, {:recalled, key, value})
+      loop(state)
+
+    {:process_next, from} ->
+      case state.inbox do
+        [] ->
+          send(from, {:empty, nil})
+          loop(state)
+        [task | rest] ->
+          result = handle_task(state, task)
+          send(from, {:processed, task, result})
+          loop(%{state | inbox: rest, processed_count: state.processed_count + 1})
+      end
+
+    :stop ->
+      :ok
+  end
+end
+```
+
+### 🤔 Plan the Conversion
+
+```elixir
+# Before writing code, plan each receive branch's conversion:
+
+conversion_plan = %{
+  "{:get_state, from}" => %{
+    callback: nil,  # :handle_call, :handle_cast, or :handle_info?
+    reason: "???"
+  },
+  "{:remember, key, value}" => %{
+    callback: nil,
+    reason: "???"
+  },
+  "{:recall, key, from}" => %{
+    callback: nil,
+    reason: "???"
+  },
+  "{:process_next, from}" => %{
+    callback: nil,
+    reason: "???"
+  },
+  ":stop" => %{
+    callback: nil,
+    reason: "???"
+  }
+}
+
+# Fill in your plan, then check:
+# {:get_state, from} -> :handle_call - Needs to return state to caller
+# {:remember, key, value} -> :handle_cast - Fire and forget
+# {:recall, key, from} -> :handle_call - Needs to return value to caller
+# {:process_next, from} -> :handle_call - Needs to return result to caller
+# :stop -> Use GenServer.stop/1 instead, which triggers terminate/2
+```
+
+### The Complete AgentServer
+
+```elixir
+defmodule AgentServer do
+  @moduledoc """
+  A GenServer-based agent that processes tasks and maintains memory.
+
+  This is the Phase 3 (OTP) version of Phase 2's ProcessAgent.
+  """
+  use GenServer
+
+  alias AgentFramework.Message
+
+  # ============================================
+  # Client API
+  # ============================================
+
+  @doc "Start an agent with the given name."
+  def start_link(name, opts \\ []) when is_binary(name) do
+    initial_memory = Keyword.get(opts, :memory, %{})
+    GenServer.start_link(__MODULE__, {name, initial_memory})
+  end
+
+  @doc "Get the agent's current state."
+  def get_state(pid) do
+    GenServer.call(pid, :get_state)
+  end
+
+  @doc "Store a value in the agent's memory."
+  def remember(pid, key, value) do
+    GenServer.cast(pid, {:remember, key, value})
+  end
+
+  @doc "Recall a value from the agent's memory."
+  def recall(pid, key) do
+    GenServer.call(pid, {:recall, key})
+  end
+
+  @doc "Send a task to the agent's inbox."
+  def send_task(pid, action, params \\ %{}) do
+    GenServer.cast(pid, {:send_task, action, params})
+  end
+
+  @doc "Process the next task in the inbox."
+  def process_next(pid) do
+    GenServer.call(pid, :process_next)
+  end
+
+  @doc "Get the number of tasks in the inbox."
+  def inbox_count(pid) do
+    GenServer.call(pid, :inbox_count)
+  end
+
+  # ============================================
+  # Server Callbacks
+  # ============================================
+
+  @impl true
+  def init({name, initial_memory}) do
+    state = %{
+      name: name,
+      status: :idle,
+      memory: initial_memory,
+      inbox: [],
+      processed_count: 0
+    }
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:get_state, _from, state) do
+    {:reply, state, state}
+  end
+
+  def handle_call({:recall, key}, _from, state) do
+    value = Map.get(state.memory, key)
+    {:reply, value, state}
+  end
+
+  def handle_call(:inbox_count, _from, state) do
+    {:reply, length(state.inbox), state}
+  end
+
+  def handle_call(:process_next, _from, state) do
+    case state.inbox do
+      [] ->
+        {:reply, {:empty, nil}, state}
+
+      [task | rest] ->
+        result = handle_task(task)
+        new_state = %{state |
+          inbox: rest,
+          processed_count: state.processed_count + 1,
+          memory: Map.put(state.memory, :last_result, result)
+        }
+        {:reply, {:ok, task, result}, new_state}
+    end
+  end
+
+  @impl true
+  def handle_cast({:remember, key, value}, state) do
+    new_memory = Map.put(state.memory, key, value)
+    {:noreply, %{state | memory: new_memory}}
+  end
+
+  def handle_cast({:send_task, action, params}, state) do
+    task_id = generate_id()
+    message = Message.task(task_id, action, params)
+    {:noreply, %{state | inbox: state.inbox ++ [message]}}
+  end
+
+  @impl true
+  def handle_info(msg, state) do
+    IO.puts("[AgentServer #{state.name}] Unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
+  @impl true
+  def terminate(reason, state) do
+    IO.puts("[AgentServer #{state.name}] Terminating: #{inspect(reason)}")
+    :ok
+  end
+
+  # ============================================
+  # Private Functions
+  # ============================================
+
+  defp handle_task(%Message{type: :task, payload: %{action: :search, params: params}}) do
+    query = Map.get(params, :query, "")
+    {:ok, "Search results for: #{query}"}
+  end
+
+  defp handle_task(%Message{type: :task, payload: %{action: :analyze, params: params}}) do
+    data = Map.get(params, :data, "")
+    {:ok, "Analysis of: #{data}"}
+  end
+
+  defp handle_task(%Message{type: :task, payload: %{action: action}}) do
+    {:error, {:unknown_action, action}}
+  end
+
+  defp generate_id do
+    :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  end
+end
+```
+
+### 🤔 Compare the Implementations
+
+```elixir
+# Look at the ProcessAgent vs AgentServer and answer:
+
+comparison_questions = %{
+  # 1. How many lines is ProcessAgent.loop/1 vs AgentServer callbacks?
+  lines_comparison: "???",
+
+  # 2. What's MISSING from AgentServer that ProcessAgent had?
+  missing_code: "???",
+
+  # 3. What does AgentServer have that ProcessAgent didn't?
+  new_features: "???",
+
+  # 4. Which would be easier to debug? Why?
+  easier_debug: "???"
+}
+
+# Answers:
+# 1. ProcessAgent ~90 lines for loop; AgentServer ~60 lines for callbacks
+# 2. Missing: The receive block, recursive loop(state) calls, managing `from` manually
+# 3. New: @impl annotations, terminate callback, better error handling, debugging support
+# 4. AgentServer - OTP tools like :sys.get_state, tracing, clear callback boundaries
+```
+
+---
+
+## Section 5: Advanced Patterns
+
+### Timeouts
+
+GenServer supports automatic timeouts:
+
+```elixir
+defmodule IdleDetector do
+  use GenServer
+
+  @idle_timeout 5_000  # 5 seconds
+
+  @impl true
+  def init(_) do
+    # Will receive :timeout in handle_info after 5 seconds of no messages
+    {:ok, %{last_activity: DateTime.utc_now()}, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call(:ping, _from, state) do
+    # Reset timeout by including it in return
+    {:reply, :pong, %{state | last_activity: DateTime.utc_now()}, @idle_timeout}
+  end
+
+  @impl true
+  def handle_info(:timeout, state) do
+    IO.puts("Been idle since #{state.last_activity}")
+    # Could hibernate, checkpoint to disk, etc.
+    {:noreply, state, @idle_timeout}
+  end
+end
+```
+
+### Named Processes
+
+```elixir
+defmodule SingletonServer do
+  use GenServer
+
+  def start_link(_) do
+    GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+  end
+
+  def get_value do
+    # Can call by name instead of pid
+    GenServer.call(__MODULE__, :get)
+  end
+
+  @impl true
+  def init(_), do: {:ok, 42}
+
+  @impl true
+  def handle_call(:get, _from, state), do: {:reply, state, state}
+end
+```
+
+### 🤔 When to Use Names?
+
+```elixir
+# Decide: pid or name for each scenario?
+
+naming_scenarios = [
+  {:config_server, "One per application, accessed everywhere"},
+  {:worker_pool, "Many identical workers"},
+  {:user_session, "One per connected user"},
+  {:database_connection, "Shared connection pool"},
+  {:temp_calculator, "Spawned for one calculation, then dies"}
+]
+
+# Your answers:
+naming_decisions = %{
+  config_server: nil,     # :name or :pid?
+  worker_pool: nil,
+  user_session: nil,
+  database_connection: nil,
+  temp_calculator: nil
+}
+
+# Answers:
+# config_server: :name - Global singleton, needs to be found easily
+# worker_pool: :pid - Many instances, use supervisor to track them
+# user_session: :name (via Registry) - Need to find by user_id
+# database_connection: :name - Pool manager is singleton, workers are pids
+# temp_calculator: :pid - Ephemeral, caller already has reference
+```
+
+---
+
+## Section 6: Interactive Exercises
+
+### Exercise 1: Build a Simple Cache
+
+```elixir
+defmodule SimpleCache do
+  use GenServer
+
+  # TODO: Implement a cache with:
+  # - put(key, value) - store a value (async, cast)
+  # - get(key) - retrieve a value (sync, call)
+  # - delete(key) - remove a value (async, cast)
+  # - clear() - remove all values (async, cast)
+  # - stats() - return %{size: N, hits: N, misses: N} (sync, call)
+
+  # Client API
+  def start_link(_opts) do
+    # Your code here
+  end
+
+  def put(cache, key, value) do
+    # Your code here
+  end
+
+  def get(cache, key) do
+    # Your code here
+  end
+
+  # Server Callbacks
+  @impl true
+  def init(_) do
+    # Your code here - what's the initial state?
+  end
+
+  # Add handle_call and handle_cast implementations...
+end
+```
+
+### Exercise 2: Add Expiration
+
+```elixir
+# Extend your cache to support expiration:
+# - put(key, value, ttl_ms) - value expires after ttl_ms milliseconds
+# - Expired values should return nil from get/1
+# - Bonus: Clean up expired entries periodically using handle_info(:cleanup, ...)
+
+# Hint: Store {value, expires_at} tuples
+# Hint: Use Process.send_after(self(), :cleanup, interval) for periodic cleanup
+```
+
+### Exercise 3: Try AgentServer
+
+```elixir
+# If you've implemented AgentServer above, test it:
+
+{:ok, agent} = AgentServer.start_link("TestAgent")
+
+# Store some memory
+AgentServer.remember(agent, :context, "researching OTP")
+
+# Recall it
+AgentServer.recall(agent, :context)
+
+# Send tasks
+AgentServer.send_task(agent, :search, %{query: "GenServer patterns"})
+AgentServer.send_task(agent, :analyze, %{data: "some data"})
+
+# Check inbox
+AgentServer.inbox_count(agent)
+
+# Process tasks
+AgentServer.process_next(agent)
+AgentServer.process_next(agent)
+
+# Check state
+AgentServer.get_state(agent)
+```
+
+---
+
+## Key Takeaways
+
+1. **GenServer splits client/server** - Client API runs in caller, callbacks run in server
+2. **Call = sync, Cast = async** - Use call when you need the result
+3. **handle_info catches everything else** - Monitors, timers, raw messages
+4. **init/terminate are opposites** - Setup and cleanup
+5. **Return tuples drive behavior** - {:reply, ...}, {:noreply, ...}, {:stop, ...}
+6. **Less code, more power** - GenServer handles the loop, timeouts, tracing
+
+---
+
+## What's Next?
+
+In the next session, we'll explore **Supervisors**:
+- Restart strategies (one_for_one, one_for_all, rest_for_one)
+- DynamicSupervisor for runtime children
+- Child specifications
+- Converting AgentMonitor to AgentSupervisor
+
+You'll build a supervision tree that automatically restarts your agents!
+
+---
+
+## Navigation
+
+← [Previous: Session 12 - What is OTP?](12_what_is_otp.livemd)
+
+→ [Next: Session 14 - Supervisors](14_supervisors.livemd)

@@ -1,0 +1,642 @@
+# Session 15: OTP Distribution (Optional Deep Dive)
+
+```elixir
+Mix.install([])
+```
+
+## Introduction
+
+So far, all your agents have run on a single BEAM instance. But what if you
+need agents on multiple machines communicating with each other?
+
+OTP was designed from the ground up for **distributed systems**. The same
+GenServer.call that works locally works identically across machines. This
+session introduces you to distributed Erlang/Elixir.
+
+### Sources for This Session
+
+This session synthesizes concepts from:
+- [Elixir School - OTP Distribution](https://elixirschool.com/en/lessons/advanced/otp_distribution)
+- [Learn You Some Erlang - Distribunomicon](https://learnyousomeerlang.com/distribunomicon)
+
+## Learning Goals
+
+By the end of this session, you'll understand:
+- How to name and connect BEAM nodes
+- Send messages between nodes
+- Make distributed GenServer calls
+- The concept of location transparency
+- When to use distribution vs other approaches
+
+**Note**: This session is marked as optional because you may not need
+distribution immediately. However, understanding it helps you appreciate
+how OTP scales.
+
+---
+
+## Section 1: What is a Node?
+
+### 🤔 Opening Reflection
+
+```elixir
+# Before we start, think about:
+
+reflection = %{
+  # 1. In your Phase 2 agent framework, how would agents on
+  #    different machines communicate?
+  cross_machine_comm: "???",
+
+  # 2. What's the difference between:
+  #    - Running 2 BEAM VMs on one machine
+  #    - Running 1 BEAM VM on each of 2 machines
+  beam_difference: "???",
+
+  # 3. If you have a PID like #PID<0.123.0>, can you send
+  #    a message to it from a different machine?
+  pid_across_machines: "???"
+}
+
+# Think about these before reading on...
+```
+
+### Nodes Explained
+
+A **node** is a running BEAM instance with a name. Every Elixir/Erlang process
+runs within a node.
+
+When you run `iex`, you're starting an unnamed node:
+
+```elixir
+# In a regular iex session:
+Node.self()
+# => :nonode@nohost
+```
+
+To enable distribution, you name your node:
+
+```bash
+# Short name (within same network/domain)
+iex --sname myapp
+
+# Long name (full network address)
+iex --name myapp@192.168.1.100
+```
+
+```elixir
+# Now in iex:
+Node.self()
+# => :myapp@hostname
+```
+
+### 🤔 Why Names Matter
+
+```elixir
+# Consider two scenarios:
+
+scenario_1 = """
+# Running: iex --sname node1
+Node.self()  # => :node1@machine
+
+# Running: iex --sname node2
+Node.self()  # => :node2@machine
+
+# Can these communicate? How?
+"""
+
+scenario_2 = """
+# Running: iex (no name)
+Node.self()  # => :nonode@nohost
+
+# Running: iex (no name)
+Node.self()  # => :nonode@nohost
+
+# Can these communicate? How?
+"""
+
+# Answer:
+# Scenario 1: Yes! Named nodes can connect via Node.connect
+# Scenario 2: No! Unnamed nodes can't be discovered or connected
+```
+
+---
+
+## Section 2: Connecting Nodes
+
+### The Cookie
+
+Nodes must share a **cookie** (secret token) to connect. Think of it as a
+simple password.
+
+```bash
+# Same cookie = can connect
+iex --sname node1 --cookie secret123
+iex --sname node2 --cookie secret123
+
+# Different cookies = connection refused
+iex --sname node1 --cookie abc
+iex --sname node2 --cookie xyz
+```
+
+### Connecting
+
+```elixir
+# On node1:
+Node.connect(:node2@hostname)
+# => true (connected)
+
+# Check connected nodes:
+Node.list()
+# => [:node2@hostname]
+```
+
+### 🤔 Connection Exploration
+
+```elixir
+# Experiment: What happens when you...
+
+experiments = [
+  "Node.connect(:nonexistent@somewhere)",
+  "Node.connect(:node2@hostname) when node2 isn't running",
+  "Node.connect(:node2@hostname) with wrong cookie",
+  "Node.disconnect(:node2@hostname) then Node.list()"
+]
+
+# Predictions:
+your_predictions = %{
+  nonexistent: "???",      # true, false, or error?
+  not_running: "???",
+  wrong_cookie: "???",
+  after_disconnect: "???"
+}
+
+# Answers:
+# nonexistent: false (can't connect to unknown host)
+# not_running: false (no one to connect to)
+# wrong_cookie: false (authentication fails silently)
+# after_disconnect: [] (empty list, no longer connected)
+```
+
+---
+
+## Section 3: Distributed Messages
+
+Once nodes are connected, sending messages is almost identical to local sends.
+
+### Basic Message Passing
+
+```elixir
+# On node1, spawn a process:
+pid = spawn(fn ->
+  receive do
+    msg -> IO.puts("Got: #{inspect(msg)}")
+  end
+end)
+# => #PID<0.123.0>
+
+# On node2, send a message to that pid:
+send(pid, :hello_from_node2)
+
+# Question: Will this work?
+```
+
+### 🤔 PIDs Across Nodes
+
+```elixir
+# Here's the interesting part:
+
+pid_mystery = """
+On node1, you get: #PID<0.123.0>
+
+If you send this pid to node2 and inspect it there,
+you'll see: #PID<12345.123.0>
+
+The first number identifies the originating node!
+"""
+
+# This means:
+# - PIDs are globally unique across the cluster
+# - send() works with any pid, local or remote
+# - The BEAM handles routing automatically
+
+# Question: What happens if node1 dies? Can node2 still send to that pid?
+answer = "???"
+
+# Answer: The send succeeds (doesn't raise), but the message is lost.
+# The receiving process is dead, so there's no one to receive it.
+```
+
+### Named Processes Across Nodes
+
+```elixir
+# Sending to a named process on another node:
+send({:my_server, :node2@hostname}, :hello)
+
+# Or with GenServer:
+GenServer.call({MyServer, :node2@hostname}, :get_state)
+```
+
+### 🤔 Location Transparency
+
+```elixir
+# Consider this code:
+
+defmodule Client do
+  def get_data(server) do
+    GenServer.call(server, :get_data)
+  end
+end
+
+# Question: Which of these will work?
+
+calls = [
+  "Client.get_data(pid)",
+  "Client.get_data(MyServer)",
+  "Client.get_data({MyServer, :node2@hostname})",
+  "Client.get_data({:via, Registry, {:myapp, :server}})"
+]
+
+# Answer: ALL of them work!
+# This is "location transparency" - the same API works regardless
+# of where the process lives. Your code doesn't need to know.
+```
+
+---
+
+## Section 4: Distributed GenServer
+
+From Elixir School:
+> For supervised, production-ready distributed computing, use
+> `Task.Supervisor.async/5`. This approach supervises tasks across nodes.
+
+### Calling a Remote GenServer
+
+```elixir
+# Start a GenServer on node1 with a name:
+defmodule CounterServer do
+  use GenServer
+
+  def start_link(_) do
+    GenServer.start_link(__MODULE__, 0, name: __MODULE__)
+  end
+
+  @impl true
+  def init(n), do: {:ok, n}
+
+  @impl true
+  def handle_call(:get, _from, n), do: {:reply, n, n}
+
+  @impl true
+  def handle_call(:increment, _from, n), do: {:reply, n + 1, n + 1}
+end
+
+# On node1:
+CounterServer.start_link([])
+```
+
+```elixir
+# On node2 (after connecting):
+GenServer.call({CounterServer, :node1@hostname}, :get)
+# => 0
+
+GenServer.call({CounterServer, :node1@hostname}, :increment)
+# => 1
+
+# The counter incremented on node1, but we called from node2!
+```
+
+### 🤔 The Implications
+
+```elixir
+# Think about what this means for your agent framework:
+
+implications = [
+  "Agent on machine A can send task to agent on machine B",
+  "Central coordinator can manage agents across the cluster",
+  "Agents can be moved between machines without code changes",
+  "Failed nodes can have their agents restarted elsewhere"
+]
+
+# Question: What challenges might arise?
+challenges = """
+1. ???
+2. ???
+3. ???
+"""
+
+# Possible challenges:
+# 1. Network latency - remote calls are slower
+# 2. Network partitions - what if nodes lose connection?
+# 3. Ordering - messages may arrive out of order across nodes
+# 4. State synchronization - each node has its own process state
+```
+
+---
+
+## Section 5: Distributed Tasks
+
+For supervised distributed work, use `Task.Supervisor`:
+
+```elixir
+# On each node, start a Task.Supervisor:
+{:ok, _} = Task.Supervisor.start_link(name: MyApp.TaskSupervisor)
+
+# Spawn a supervised task on a remote node:
+Task.Supervisor.async(
+  {MyApp.TaskSupervisor, :node2@hostname},
+  fn -> expensive_computation() end
+)
+|> Task.await()
+```
+
+### 🤔 When to Use Distributed Tasks
+
+```elixir
+# For each scenario, would you use:
+# A) GenServer.call to remote node
+# B) Task.Supervisor.async to remote node
+# C) Something else
+
+scenarios = [
+  {:get_agent_state, "Quick query, need result immediately"},
+  {:long_computation, "CPU-intensive work, don't block caller"},
+  {:fire_and_forget, "Send notification, don't care about result"},
+  {:coordinate_agents, "Central server managing agents on all nodes"}
+]
+
+# Your choices:
+your_choices = %{
+  get_agent_state: nil,
+  long_computation: nil,
+  fire_and_forget: nil,
+  coordinate_agents: nil
+}
+
+# Answers:
+# get_agent_state: A (GenServer.call) - Simple, synchronous
+# long_computation: B (Task.Supervisor.async) - Don't block caller
+# fire_and_forget: GenServer.cast or send (async, no supervision needed)
+# coordinate_agents: A (GenServer.call) with state in coordinator
+```
+
+---
+
+## Section 6: Node Monitoring
+
+You can be notified when nodes connect or disconnect:
+
+```elixir
+defmodule ClusterMonitor do
+  use GenServer
+
+  def start_link(_) do
+    GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+  end
+
+  @impl true
+  def init(_) do
+    # Subscribe to node events
+    :net_kernel.monitor_nodes(true)
+    {:ok, %{nodes: []}}
+  end
+
+  @impl true
+  def handle_info({:nodeup, node}, state) do
+    IO.puts("Node connected: #{node}")
+    {:noreply, %{state | nodes: [node | state.nodes]}}
+  end
+
+  @impl true
+  def handle_info({:nodedown, node}, state) do
+    IO.puts("Node disconnected: #{node}")
+    {:noreply, %{state | nodes: List.delete(state.nodes, node)}}
+  end
+end
+```
+
+### 🤔 Handling Node Failures
+
+```elixir
+# Consider: You have agents distributed across 3 nodes.
+# Node 2 crashes. What should happen?
+
+failure_handling = %{
+  # Option A: Do nothing, agents on node2 are gone
+  do_nothing: "Pros: ??? / Cons: ???",
+
+  # Option B: Restart agents on node1 or node3
+  restart_elsewhere: "Pros: ??? / Cons: ???",
+
+  # Option C: Wait for node2 to come back, re-sync
+  wait_and_sync: "Pros: ??? / Cons: ???"
+}
+
+# This is actually a deep distributed systems problem!
+# There's no single right answer - it depends on your requirements.
+
+# Common patterns:
+# - Use a supervisor on each node (agents restart locally)
+# - Use a global registry like :pg (process groups)
+# - Use Phoenix.PubSub for cross-node messaging
+# - Use external coordination (Redis, etcd, Consul)
+```
+
+---
+
+## Section 7: Agent Clustering Preview
+
+Here's a preview of how your agent framework could work across nodes:
+
+```elixir
+defmodule DistributedAgentFramework do
+  @moduledoc """
+  Multi-node agent coordination.
+
+  This is a preview of what Phase 4 (Phoenix) will enable more easily
+  with Phoenix.PubSub.
+  """
+
+  @doc "Start an agent on a specific node."
+  def start_agent_on(node, name) when is_atom(node) do
+    # Call the supervisor on the remote node
+    DynamicSupervisor.start_child(
+      {AgentFramework.AgentSupervisor, node},
+      {AgentFramework.AgentServer, name}
+    )
+  end
+
+  @doc "Send a task to an agent on any node."
+  def send_task_to(node, agent_name, action, params) do
+    # Find the agent on that node and send it a task
+    case Registry.lookup({AgentFramework.Registry, node}, agent_name) do
+      [{pid, _}] ->
+        AgentFramework.AgentServer.send_task(pid, action, params)
+      [] ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc "Broadcast a message to all agents on all nodes."
+  def broadcast_all(message) do
+    for node <- [Node.self() | Node.list()] do
+      pids = DynamicSupervisor.which_children({AgentFramework.AgentSupervisor, node})
+      for {_, pid, _, _} <- pids, is_pid(pid) do
+        send(pid, message)
+      end
+    end
+  end
+end
+```
+
+### 🤔 Distribution Tradeoffs
+
+```elixir
+# Before using distribution, consider:
+
+tradeoffs = %{
+  benefits: [
+    "Horizontal scaling - add more machines",
+    "Fault isolation - one machine crash doesn't kill all",
+    "Location flexibility - move processes around",
+    "Same code works locally and distributed"
+  ],
+
+  challenges: [
+    "Network latency - milliseconds vs microseconds",
+    "Network partitions - split-brain scenarios",
+    "Complexity - distributed debugging is hard",
+    "Security - need to protect the cookie"
+  ],
+
+  alternatives: [
+    "Single large machine (vertical scaling)",
+    "HTTP APIs between services",
+    "Message queues (RabbitMQ, Kafka)",
+    "Database for coordination"
+  ]
+}
+
+# Question: When would you choose distributed Erlang over HTTP APIs?
+when_to_use = """
+Distributed Erlang is best when:
+- ???
+- ???
+- ???
+
+HTTP APIs are better when:
+- ???
+- ???
+- ???
+"""
+
+# Distributed Erlang is best when:
+# - Low-latency communication is critical
+# - You need to share process state across nodes
+# - All nodes run trusted Erlang/Elixir code
+# - You want OTP supervision across nodes
+
+# HTTP APIs are better when:
+# - Nodes are written in different languages
+# - Nodes are on untrusted networks
+# - You need fine-grained access control
+# - Nodes have very different lifecycles
+```
+
+---
+
+## Section 8: Interactive Exercises
+
+### Exercise 1: Two-Node Setup
+
+This exercise requires two terminal windows.
+
+```bash
+# Terminal 1:
+cd agent_framework
+iex --sname node1 --cookie mysecret -S mix
+
+# Terminal 2:
+cd agent_framework
+iex --sname node2 --cookie mysecret -S mix
+```
+
+```elixir
+# On node1:
+Node.self()
+# => :node1@yourmachine
+
+# On node2:
+Node.connect(:node1@yourmachine)
+# => true
+
+Node.list()
+# => [:node1@yourmachine]
+```
+
+### Exercise 2: Cross-Node Agent
+
+```elixir
+# On node1, start an agent:
+{:ok, agent} = AgentFramework.AgentServer.start_link("Worker-1")
+AgentFramework.AgentServer.remember(agent, :location, "node1")
+
+# On node2, query that agent:
+# First, get the pid somehow (in practice, you'd use Registry)
+GenServer.call(agent, {:recall, :location})
+# => "node1"
+
+# The state lives on node1, but node2 can query it!
+```
+
+### Exercise 3: Think About Your Framework
+
+```elixir
+# Consider: How would you design a distributed agent framework?
+
+design_questions = %{
+  # Where do agents register their names?
+  registry: "???",  # Global registry? Per-node? External service?
+
+  # How do you find an agent by name?
+  discovery: "???",
+
+  # What happens when a node dies?
+  failure_handling: "???",
+
+  # How do agents communicate across nodes?
+  communication: "???"
+}
+
+# There's no single right answer - these are real distributed systems questions!
+```
+
+---
+
+## Key Takeaways
+
+1. **Nodes are named BEAM instances** - Enable with --sname or --name
+2. **Cookies authenticate connections** - Simple shared secret
+3. **PIDs work across nodes** - send() routes automatically
+4. **GenServer.call works remotely** - {Name, node} tuple
+5. **Location transparency** - Same API local or remote
+6. **Distribution has tradeoffs** - Latency, partitions, complexity
+
+---
+
+## What's Next?
+
+In the next session, we'll complete Phase 3 with the **Checkpoint Project**:
+- Implement AgentServer (GenServer)
+- Implement AgentSupervisor (DynamicSupervisor)
+- Create Application module
+- Run tests and verify everything works
+
+After that, Phase 4 will add Phoenix for HTTP/API support, which makes
+distributed agents even easier with Phoenix.PubSub!
+
+---
+
+## Navigation
+
+← [Previous: Session 14 - Supervisors](14_supervisors.livemd)
+
+→ [Next: Session 16 - Checkpoint: OTP Agents](16_checkpoint_otp_agents.livemd)
