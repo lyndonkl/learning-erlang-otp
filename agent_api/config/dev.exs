@@ -18,3 +18,19 @@ config :phoenix, :stacktrace_depth, 20
 
 # Initialize plugs at runtime for faster development compilation
 config :phoenix, :plug_init_mode, :runtime
+
+# libcluster topology for development
+# Gossip strategy automatically discovers nodes on the same network
+config :libcluster,
+  topologies: [
+    agent_cluster: [
+      strategy: Cluster.Strategy.Gossip,
+      config: [
+        port: 45892,
+        if_addr: "0.0.0.0",
+        multicast_if: "127.0.0.1",
+        multicast_addr: "230.1.1.251",
+        multicast_ttl: 1
+      ]
+    ]
+  ]

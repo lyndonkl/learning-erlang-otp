@@ -1,0 +1,705 @@
+# Session 22: ETS - Erlang Term Storage
+
+```elixir
+Mix.install([])
+```
+
+## Introduction
+
+In Phase 3, your agents store state inside a GenServer process. That works well
+when one process owns the data. But what happens when you need **fast lookups
+across hundreds of agents**? Every read has to go through the GenServer's
+mailbox - a serial bottleneck.
+
+Erlang Term Storage (ETS) is a built-in, per-node in-memory key-value store.
+It lives outside of any single process and allows **concurrent reads** without
+sending messages. This session introduces ETS and uses it to build an
+AgentDirectory for cross-node agent discovery.
+
+### Sources for This Session
+
+This session synthesizes concepts from:
+
+* [Elixir School - ETS](https://elixirschool.com/en/lessons/storage/ets)
+* [Learn You Some Erlang - Distribunomicon](https://learnyousomeerlang.com/distribunomicon)
+* [Erlang :ets module docs](https://www.erlang.org/doc/man/ets.html)
+
+## Learning Goals
+
+By the end of this session, you'll be able to:
+
+* Understand ETS as in-memory key-value storage
+* Create, read, update, delete ETS tables
+* Choose between table types (`:set`, `:ordered_set`, `:bag`, `:duplicate_bag`)
+* Control access with `:public`, `:protected`, `:private`
+* Use match specifications for queries
+* Compare ETS to GenServer state and Maps
+* Build an ETS-backed AgentDirectory
+
+---
+
+## Section 1: What is ETS?
+
+### 🤔 Opening Reflection
+
+```elixir
+# Your agents store state in GenServer memory.
+# What happens when you need FAST lookups across hundreds of agents?
+
+bottleneck = """
+GenServer state: ONE process holds data, all reads go through it.
+
+    Agent-1 ──┐
+    Agent-2 ──┼── GenServer mailbox (serial) ──> state map
+    Agent-3 ──┘
+
+Every lookup = message send + wait for reply.
+With 100 concurrent lookups, they queue up in the mailbox.
+
+ETS: SHARED memory, concurrent reads.
+
+    Agent-1 ──> ETS table (concurrent!)
+    Agent-2 ──> ETS table
+    Agent-3 ──> ETS table
+
+No mailbox, no waiting, no bottleneck for reads.
+"""
+
+# Question: When would you pick GenServer state over ETS?
+# Your answer: ???
+
+# Answer:
+# GenServer state when:
+# - Data is owned by one process and rarely read by others
+# - You need transactional updates (change multiple fields atomically)
+# - The data is small and reads are infrequent
+#
+# ETS when:
+# - Many processes need fast concurrent reads
+# - You're building a lookup table (registry, cache, directory)
+# - Read-heavy workload with occasional writes
+```
+
+### ETS Key Properties
+
+```elixir
+# ETS is:
+# 1. In-memory (fast, but lost on restart)
+# 2. Per-node (each BEAM node has its own ETS tables)
+# 3. Outside any process (survives process crashes if table owner survives)
+# 4. Concurrent reads (multiple processes read simultaneously)
+# 5. Built into Erlang (no dependencies needed)
+
+ets_properties = %{
+  storage: "In-memory (RAM only)",
+  scope: "Per-node (not distributed)",
+  ownership: "Owned by creating process",
+  concurrency: "Concurrent reads, serialized writes",
+  persistence: "Lost on node restart",
+  capacity: "Limited only by available RAM"
+}
+```
+
+---
+
+## Section 2: Table Types
+
+### The Four Table Types
+
+```elixir
+# ETS supports four table types:
+
+table_types = %{
+  set: """
+    One entry per key (like a Map).
+    Duplicate inserts overwrite.
+    Most common type.
+  """,
+
+  ordered_set: """
+    Like :set but keys are sorted.
+    Iteration returns keys in order.
+    Slightly slower inserts.
+  """,
+
+  bag: """
+    Multiple entries per key allowed,
+    but no exact duplicate entries.
+    {key, val1} and {key, val2} both stored.
+  """,
+
+  duplicate_bag: """
+    Multiple entries per key allowed,
+    including exact duplicates.
+    {key, val} can appear multiple times.
+  """
+}
+```
+
+### 🤔 Choosing a Table Type
+
+```elixir
+# For each scenario, which table type would you use?
+
+scenarios = [
+  {"Agent name → pid lookup", "???"},
+  {"Agent name → list of skills", "???"},
+  {"Sorted leaderboard by score", "???"},
+  {"Event log with duplicate events", "???"}
+]
+
+# Answers:
+answers = [
+  {"Agent name → pid lookup", ":set (one pid per name)"},
+  {"Agent name → list of skills", ":bag (multiple skills per agent)"},
+  {"Sorted leaderboard by score", ":ordered_set (sorted by key)"},
+  {"Event log with duplicate events", ":duplicate_bag (allow exact dupes)"}
+]
+```
+
+---
+
+## Section 3: Creating and Using Tables
+
+### Creating a Table
+
+```elixir
+# Create an ETS table with :ets.new/2
+table = :ets.new(:my_agents, [:set, :named_table])
+
+# :named_table lets you use the atom name instead of the table reference
+# Without :named_table, you must use the returned reference
+
+# Insert some data (tuples where first element is the key)
+:ets.insert(:my_agents, {"Worker-1", :idle, self()})
+:ets.insert(:my_agents, {"Worker-2", :busy, self()})
+:ets.insert(:my_agents, {"Worker-3", :idle, self()})
+
+# The table now has 3 entries
+:ets.info(:my_agents, :size)
+```
+
+### Reading Data
+
+```elixir
+# Lookup by key - returns a list of matching tuples
+:ets.lookup(:my_agents, "Worker-1")
+# => [{"Worker-1", :idle, #PID<0.123.0>}]
+
+# Lookup non-existent key - returns empty list
+:ets.lookup(:my_agents, "NonExistent")
+# => []
+
+# Get all entries
+:ets.tab2list(:my_agents)
+```
+
+### Updating Data
+
+```elixir
+# Insert overwrites existing key in :set tables
+:ets.insert(:my_agents, {"Worker-1", :busy, self()})
+
+# Verify the update
+:ets.lookup(:my_agents, "Worker-1")
+# Status changed from :idle to :busy
+```
+
+### Deleting Data
+
+```elixir
+# Delete by key
+:ets.delete(:my_agents, "Worker-3")
+
+# Verify deletion
+:ets.lookup(:my_agents, "Worker-3")
+# => []
+
+# Check table size
+:ets.info(:my_agents, :size)
+# => 2
+
+# Clean up the table
+:ets.delete(:my_agents)
+```
+
+---
+
+## Section 4: Access Control
+
+### Three Access Levels
+
+```elixir
+# :private - Only the owning process can read/write
+private_table = :ets.new(:private_data, [:set, :private])
+:ets.insert(private_table, {:secret, "only I can see this"})
+
+# :protected (default) - Owner writes, anyone reads
+protected_table = :ets.new(:shared_read, [:set, :protected])
+:ets.insert(protected_table, {:config, "anyone can read"})
+
+# :public - Any process can read and write
+public_table = :ets.new(:open_data, [:set, :public])
+:ets.insert(public_table, {:status, "anyone can modify"})
+
+# Clean up
+:ets.delete(private_table)
+:ets.delete(protected_table)
+:ets.delete(public_table)
+```
+
+### 🤔 When to Use Each Access Level
+
+```elixir
+# Question: For an AgentDirectory that maps agent names to {node, pid},
+# which access level would you choose?
+
+access_choice = """
+Your answer: ???
+"""
+
+# Answer:
+# :public with read_concurrency: true
+#
+# Why?
+# - Multiple processes (agents, router, controllers) need to READ
+# - Writes are infrequent (only when agents start/stop)
+# - A GenServer owns the table and coordinates writes
+# - Readers don't need to go through the GenServer
+#
+# This gives us the best of both worlds:
+# - Fast concurrent reads (direct ETS access)
+# - Safe coordinated writes (through GenServer)
+```
+
+---
+
+## Section 5: Match Specifications
+
+### Basic Matching with :ets.match/2
+
+```elixir
+# Create a table with agent data
+:ets.new(:agents, [:set, :named_table, :public])
+:ets.insert(:agents, {"Worker-1", :node1, :idle})
+:ets.insert(:agents, {"Worker-2", :node1, :busy})
+:ets.insert(:agents, {"Worker-3", :node2, :idle})
+:ets.insert(:agents, {"Analyzer-1", :node2, :busy})
+
+# Match all entries - :_ means "match anything"
+:ets.match(:agents, {:"$1", :"$2", :"$3"})
+# Returns: [["Worker-1", :node1, :idle], ...]
+
+# Find all agent names on :node1
+:ets.match(:agents, {:"$1", :node1, :_})
+# Returns: [["Worker-1"], ["Worker-2"]]
+
+# Find all idle agents
+:ets.match(:agents, {:"$1", :_, :idle})
+# Returns: [["Worker-1"], ["Worker-3"]]
+```
+
+### Using :ets.match_object/2
+
+```elixir
+# match_object returns full tuples instead of bound variables
+:ets.match_object(:agents, {:_, :node2, :_})
+# Returns: [{"Worker-3", :node2, :idle}, {"Analyzer-1", :node2, :busy}]
+
+# Find all busy agents as full tuples
+:ets.match_object(:agents, {:_, :_, :busy})
+# Returns: [{"Worker-2", :node1, :busy}, {"Analyzer-1", :node2, :busy}]
+```
+
+### Using :ets.match_delete/2
+
+```elixir
+# Delete all agents on :node2 (simulating node failure)
+:ets.match_delete(:agents, {:_, :node2, :_})
+
+# Verify - only node1 agents remain
+:ets.tab2list(:agents)
+
+# Clean up
+:ets.delete(:agents)
+```
+
+---
+
+## Section 6: ETS vs GenServer State vs Maps
+
+### 🤔 Comparison
+
+```elixir
+comparison = %{
+  map: %{
+    pros: [
+      "Immutable (safe to share)",
+      "Pattern matching friendly",
+      "Simple and familiar"
+    ],
+    cons: [
+      "Copied on every update (O(n) for large maps)",
+      "Lives inside one process",
+      "No concurrent access"
+    ],
+    best_for: "Small data within a single process"
+  },
+
+  genserver_state: %{
+    pros: [
+      "Encapsulated state management",
+      "Transactional updates (one message at a time)",
+      "OTP supervision and restart"
+    ],
+    cons: [
+      "Serial access (mailbox bottleneck)",
+      "All reads go through one process",
+      "State lost on crash (unless persisted)"
+    ],
+    best_for: "State that needs coordinated updates"
+  },
+
+  ets: %{
+    pros: [
+      "Concurrent reads (no bottleneck)",
+      "Mutable (no copying overhead)",
+      "Can survive process crashes (if owner is supervised)",
+      "Built-in match/query capabilities"
+    ],
+    cons: [
+      "Not immutable (harder to reason about)",
+      "Per-node only (not distributed)",
+      "Tuple-based (less ergonomic than maps)",
+      "Owner process crash = table gone"
+    ],
+    best_for: "Read-heavy lookup tables, caches, registries"
+  }
+}
+
+# Question: For an agent directory that maps names to {node, pid},
+# which would you choose and why?
+#
+# Answer: ETS. The directory is read-heavy (many lookups per agent call)
+# with infrequent writes (only on start/stop). ETS gives concurrent
+# reads without a bottleneck.
+```
+
+---
+
+## Section 7: Building AgentDirectory with ETS
+
+### The Design
+
+```elixir
+# AgentDirectory uses a GenServer to OWN the ETS table,
+# but reads go directly to ETS (bypassing the GenServer).
+#
+#   ┌─────────────────────────────────────────┐
+#   │           AgentDirectory                │
+#   │                                         │
+#   │   GenServer (owns table, handles writes)│
+#   │        │                                │
+#   │        ▼                                │
+#   │   ETS Table [:public, read_concurrency] │
+#   │        ▲                                │
+#   │        │                                │
+#   │   Direct reads (any process)            │
+#   └─────────────────────────────────────────┘
+#
+# Write path: Process → GenServer.call → :ets.insert
+# Read path:  Process → :ets.lookup (direct, no GenServer)
+
+design_rationale = """
+Why GenServer + ETS instead of just ETS?
+
+1. Table ownership - If the creating process dies, the table dies.
+   A GenServer under a Supervisor keeps the table alive.
+
+2. Write coordination - While ETS supports concurrent writes,
+   having a single writer prevents race conditions.
+
+3. Side effects - Writes can trigger logging, PubSub broadcasts, etc.
+
+4. API encapsulation - Clean module API hides ETS details.
+"""
+```
+
+### The Implementation
+
+```elixir
+# Here's our AgentDirectory (already in agent_framework/lib/):
+
+defmodule AgentDirectoryExample do
+  use GenServer
+
+  @table_name :agent_directory_example
+
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  # Write goes through GenServer (coordinated)
+  def register(name, node, pid) do
+    GenServer.call(__MODULE__, {:register, name, node, pid})
+  end
+
+  def unregister(name) do
+    GenServer.call(__MODULE__, {:unregister, name})
+  end
+
+  # Read goes directly to ETS (fast, concurrent)
+  def lookup(name) do
+    case :ets.lookup(@table_name, name) do
+      [{^name, node, pid}] -> {:ok, {node, pid}}
+      [] -> :error
+    end
+  end
+
+  # List all agents (direct ETS read)
+  def all_agents do
+    :ets.tab2list(@table_name)
+  end
+
+  # Find agents on a specific node (ETS match)
+  def agents_on_node(node) do
+    :ets.match_object(@table_name, {:_, node, :_})
+  end
+
+  # Remove all agents from a node (e.g., after node crash)
+  def remove_node_agents(node) do
+    GenServer.call(__MODULE__, {:remove_node_agents, node})
+  end
+
+  # GenServer callbacks
+  @impl true
+  def init(_opts) do
+    table = :ets.new(@table_name, [
+      :set,            # One entry per key
+      :public,         # Any process can read
+      :named_table,    # Access by atom name
+      read_concurrency: true  # Optimize for concurrent reads
+    ])
+    {:ok, %{table: table}}
+  end
+
+  @impl true
+  def handle_call({:register, name, node, pid}, _from, state) do
+    :ets.insert(@table_name, {name, node, pid})
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:unregister, name}, _from, state) do
+    :ets.delete(@table_name, name)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:remove_node_agents, node}, _from, state) do
+    :ets.match_delete(@table_name, {:_, node, :_})
+    {:reply, :ok, state}
+  end
+end
+```
+
+### 🤔 Why This Matters for Distribution
+
+```elixir
+# You need to find which NODE an agent lives on.
+# Registry works per-node. What about cross-node?
+
+cross_node_problem = """
+Node 1 has: Worker-1, Worker-2
+Node 2 has: Worker-3, Worker-4
+
+From Node 1, you want to call Worker-3.
+Registry on Node 1 doesn't know about Worker-3!
+
+AgentDirectory solution:
+- Each node's directory knows about agents on ALL nodes
+- When a node joins, it syncs its agents to other directories
+- When a node leaves, its agents are removed from all directories
+
+This gives us fast O(1) lookups for any agent, from any node.
+"""
+```
+
+---
+
+## Section 8: Interactive Exercises
+
+### Exercise 1: Build a Simple Cache
+
+```elixir
+# Build a simple cache using ETS that supports:
+# - put(key, value, ttl_seconds)
+# - get(key) that returns nil for expired entries
+
+# Hint: Store {key, value, expiry_timestamp}
+
+defmodule SimpleCache do
+  def start do
+    :ets.new(:cache, [:set, :named_table, :public])
+  end
+
+  def put(key, value, ttl_seconds) do
+    expiry = System.monotonic_time(:second) + ttl_seconds
+    :ets.insert(:cache, {key, value, expiry})
+  end
+
+  def get(key) do
+    case :ets.lookup(:cache, key) do
+      [{^key, value, expiry}] ->
+        if System.monotonic_time(:second) < expiry do
+          value
+        else
+          :ets.delete(:cache, key)
+          nil
+        end
+
+      [] ->
+        nil
+    end
+  end
+end
+
+# Try it:
+SimpleCache.start()
+SimpleCache.put(:greeting, "Hello!", 5)
+SimpleCache.get(:greeting)
+# => "Hello!"
+
+# After 5 seconds, SimpleCache.get(:greeting) returns nil
+```
+
+### Exercise 2: Agent Lookup Performance
+
+```elixir
+# Compare lookup speed: GenServer state vs ETS
+
+# GenServer approach
+defmodule MapLookup do
+  use GenServer
+
+  def start_link(data), do: GenServer.start_link(__MODULE__, data, name: __MODULE__)
+  def lookup(key), do: GenServer.call(__MODULE__, {:lookup, key})
+
+  @impl true
+  def init(data), do: {:ok, data}
+
+  @impl true
+  def handle_call({:lookup, key}, _from, data) do
+    {:reply, Map.get(data, key), data}
+  end
+end
+
+# ETS approach
+defmodule EtsLookup do
+  def start(data) do
+    :ets.new(:ets_lookup, [:set, :named_table, :public, read_concurrency: true])
+    Enum.each(data, fn {k, v} -> :ets.insert(:ets_lookup, {k, v}) end)
+  end
+
+  def lookup(key) do
+    case :ets.lookup(:ets_lookup, key) do
+      [{^key, value}] -> value
+      [] -> nil
+    end
+  end
+end
+
+# Generate test data
+data = Map.new(1..1000, fn i -> {i, "agent_#{i}"} end)
+
+MapLookup.start_link(data)
+EtsLookup.start(data)
+
+# Benchmark (simple timing)
+{genserver_time, _} = :timer.tc(fn ->
+  for _ <- 1..10_000, do: MapLookup.lookup(:rand.uniform(1000))
+end)
+
+{ets_time, _} = :timer.tc(fn ->
+  for _ <- 1..10_000, do: EtsLookup.lookup(:rand.uniform(1000))
+end)
+
+IO.puts("GenServer: #{genserver_time}μs")
+IO.puts("ETS:       #{ets_time}μs")
+IO.puts("ETS is #{Float.round(genserver_time / ets_time, 1)}x faster")
+
+# Clean up
+GenServer.stop(MapLookup)
+:ets.delete(:ets_lookup)
+```
+
+### Exercise 3: Match Specification Practice
+
+```elixir
+# Given this ETS table of agents:
+:ets.new(:exercise_agents, [:set, :named_table, :public])
+
+agents = [
+  {"Worker-1", :node1, :idle, 0},
+  {"Worker-2", :node1, :busy, 5},
+  {"Worker-3", :node2, :idle, 3},
+  {"Analyzer-1", :node2, :busy, 12},
+  {"Analyzer-2", :node1, :idle, 7}
+]
+
+Enum.each(agents, &:ets.insert(:exercise_agents, &1))
+
+# Task 1: Find all agents on :node2
+node2_agents = :ets.match_object(:exercise_agents, {:_, :node2, :_, :_})
+IO.inspect(node2_agents, label: "Node 2 agents")
+
+# Task 2: Find names of all idle agents
+idle_names = :ets.match(:exercise_agents, {:"$1", :_, :idle, :_})
+IO.inspect(idle_names, label: "Idle agent names")
+
+# Task 3: Find all agents with processed_count > 5
+# (ETS match specs can't do comparisons easily,
+#  so we filter after matching)
+busy_agents =
+  :ets.tab2list(:exercise_agents)
+  |> Enum.filter(fn {_, _, _, count} -> count > 5 end)
+IO.inspect(busy_agents, label: "Agents with >5 processed")
+
+# Clean up
+:ets.delete(:exercise_agents)
+```
+
+---
+
+## Key Takeaways
+
+1. **ETS is in-memory key-value storage** - Built into Erlang, no dependencies needed
+
+2. **Concurrent reads without bottleneck** - Unlike GenServer state, multiple processes read simultaneously
+
+3. **Four table types** - `:set` (unique keys), `:ordered_set` (sorted), `:bag` (multi-value), `:duplicate_bag`
+
+4. **Three access levels** - `:private`, `:protected` (default), `:public`
+
+5. **GenServer + ETS pattern** - GenServer owns and writes, ETS provides fast reads
+
+6. **AgentDirectory uses ETS** - Maps agent names to `{node, pid}` for cross-node discovery
+
+---
+
+## What's Next?
+
+In the next session, we'll use the AgentDirectory in practice with **Distributed Erlang**:
+
+* Start multiple BEAM nodes
+* Connect them into a cluster
+* Make remote GenServer calls
+* Monitor node connections with ClusterMonitor
+
+Your ETS-backed AgentDirectory will enable fast agent lookup across the cluster!
+
+---
+
+## Navigation
+
+← [Previous: Session 21 - Checkpoint Phoenix A2A](21_checkpoint_phoenix_a2a.livemd)
+
+→ [Next: Session 23 - Distributed Erlang in Practice](23_distributed_erlang.livemd)

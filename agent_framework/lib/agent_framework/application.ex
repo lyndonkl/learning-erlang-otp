@@ -11,25 +11,29 @@ defmodule AgentFramework.Application do
   ```
   AgentFramework.Supervisor (strategy: :one_for_one)
          │
-    ┌────┴────┐
-    ▼         ▼
-  Registry  AgentSupervisor
-              │
-         (dynamic agents)
+    ┌────┼──────────────┐
+    ▼    ▼              ▼
+  Registry  AgentDirectory  AgentSupervisor
+                              │
+                         (dynamic agents)
   ```
 
   The tree consists of:
 
   1. **Registry** - Provides name-based lookup for agents
-  2. **AgentSupervisor** - DynamicSupervisor for agent processes
+  2. **AgentDirectory** - ETS-backed cross-node agent name→{node, pid} directory
+  3. **AgentSupervisor** - DynamicSupervisor for agent processes
 
   ## Why This Structure?
 
-  - **one_for_one strategy**: Registry and AgentSupervisor are independent.
-    If one crashes, the other can continue operating.
+  - **one_for_one strategy**: Registry, AgentDirectory, and AgentSupervisor
+    are independent. If one crashes, the others can continue operating.
 
   - **Registry first**: Agents may want to register themselves, so Registry
     must be started before any agents.
+
+  - **AgentDirectory second**: ETS-backed directory for cross-node agent
+    lookups. Must be started before agents can register themselves.
 
   - **DynamicSupervisor**: Agents are added at runtime, not at application
     startup, so we use DynamicSupervisor instead of regular Supervisor.
@@ -52,6 +56,10 @@ defmodule AgentFramework.Application do
       # Registry for named agent lookup
       # Agents can use AgentFramework.AgentRegistry.via("name") to register
       {Registry, keys: :unique, name: AgentFramework.Registry},
+
+      # ETS-backed directory for cross-node agent lookups
+      # Supports concurrent reads without GenServer bottleneck
+      AgentFramework.AgentDirectory,
 
       # DynamicSupervisor for agent processes
       # Agents are added at runtime via AgentSupervisor.start_agent/2

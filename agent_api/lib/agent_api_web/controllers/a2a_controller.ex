@@ -45,6 +45,7 @@ defmodule AgentApiWeb.A2AController do
   use AgentApiWeb, :controller
 
   alias AgentApi.A2A.{JsonRpc, TaskManager}
+  alias AgentApi.Cluster.ClusterMonitor
 
   @doc """
   Handle JSON-RPC requests.
@@ -74,6 +75,7 @@ defmodule AgentApiWeb.A2AController do
       "ListAgents" -> handle_list_agents(id)
       "StartAgent" -> handle_start_agent(params, id)
       "ProcessNext" -> handle_process_next(params, id)
+      "GetClusterInfo" -> handle_get_cluster_info(id)
       _ -> JsonRpc.method_not_found(method, id)
     end
   end
@@ -128,11 +130,19 @@ defmodule AgentApiWeb.A2AController do
   # ListAgents - List all available agents
   # Params: none
   defp handle_list_agents(id) do
-    agents =
-      TaskManager.list_agents()
-      |> Enum.map(fn {name, _pid} -> name end)
+    agents_with_nodes = TaskManager.list_agents_with_nodes()
 
-    JsonRpc.success(%{agents: agents, count: length(agents)}, id)
+    agents_info =
+      Enum.map(agents_with_nodes, fn {name, node, _pid} ->
+        %{name: name, node: to_string(node)}
+      end)
+
+    agent_names = Enum.map(agents_info, & &1.name)
+
+    JsonRpc.success(
+      %{agents: agent_names, agents_detail: agents_info, count: length(agents_info)},
+      id
+    )
   end
 
   # StartAgent - Start a new agent
@@ -177,5 +187,20 @@ defmodule AgentApiWeb.A2AController do
 
   defp handle_process_next(_params, id) do
     JsonRpc.invalid_params("Missing required: agent", id)
+  end
+
+  # GetClusterInfo - Get cluster status
+  # Params: none
+  defp handle_get_cluster_info(id) do
+    info = ClusterMonitor.cluster_info()
+
+    JsonRpc.success(
+      %{
+        self: to_string(info.self),
+        connected: Enum.map(info.connected, &to_string/1),
+        total_nodes: info.total
+      },
+      id
+    )
   end
 end

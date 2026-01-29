@@ -30,6 +30,7 @@ defmodule AgentApi.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:plug_cowboy, "~> 2.7"},
+      {:libcluster, "~> 3.3"},
       {:agent_framework, path: "../agent_framework"}
     ]
   end
