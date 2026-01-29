@@ -134,6 +134,7 @@ mix phx.routes
 ```
 
 Expected output:
+
 ```
   GET   /.well-known/agent.json   AgentApiWeb.AgentCardController :show
  POST   /a2a                       AgentApiWeb.A2AController :handle
@@ -147,9 +148,10 @@ iex -S mix phx.server
 ```
 
 Expected:
-- Server starts on port 4000
-- AgentFramework.Supervisor starts (from dependency)
-- No errors in console
+
+* Server starts on port 4000
+* AgentFramework.Supervisor starts (from dependency)
+* No errors in console
 
 ---
 
@@ -162,6 +164,7 @@ curl http://localhost:4000/health
 ```
 
 Expected response:
+
 ```json
 {
   "status": "healthy",
@@ -176,6 +179,7 @@ curl http://localhost:4000/.well-known/agent.json | jq
 ```
 
 Expected response:
+
 ```json
 {
   "name": "Elixir Agent Framework",
@@ -209,9 +213,10 @@ Expected response:
 ```
 
 Verify:
-- [ ] Has name, version, url
-- [ ] Has capabilities object
-- [ ] Has skills array with search, analyze, summarize
+
+* [ ] Has name, version, url
+* [ ] Has capabilities object
+* [ ] Has skills array with search, analyze, summarize
 
 ### Test 3: List Agents (Empty)
 
@@ -222,6 +227,7 @@ curl -X POST http://localhost:4000/a2a \
 ```
 
 Expected:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -242,6 +248,7 @@ curl -X POST http://localhost:4000/a2a \
 ```
 
 Expected:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -262,6 +269,7 @@ curl -X POST http://localhost:4000/a2a \
 ```
 
 Expected:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -291,6 +299,7 @@ curl -X POST http://localhost:4000/a2a \
 ```
 
 Expected:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -313,6 +322,7 @@ curl -X POST http://localhost:4000/a2a \
 ```
 
 Expected:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -338,6 +348,7 @@ curl -X POST http://localhost:4000/a2a \
 ```
 
 Expected:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -360,8 +371,9 @@ curl -X POST http://localhost:4000/a2a \
 ```
 
 Expected:
-- inbox_count: 0
-- processed_count: 1
+
+* inbox_count: 0
+* processed_count: 1
 
 ### Test 10: Error Handling - Agent Not Found
 
@@ -372,6 +384,7 @@ curl -X POST http://localhost:4000/a2a \
 ```
 
 Expected:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -392,6 +405,7 @@ curl -X POST http://localhost:4000/a2a \
 ```
 
 Expected:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -415,9 +429,10 @@ mix test
 Expected: All tests pass.
 
 If tests fail, check:
-- [ ] agent_framework application starts correctly
-- [ ] Test setup creates necessary agents
-- [ ] JSON-RPC format is correct
+
+* [ ] agent_framework application starts correctly
+* [ ] Test setup creates necessary agents
+* [ ] JSON-RPC format is correct
 
 ---
 
@@ -466,33 +481,38 @@ TaskManager.list_agents()
 ## Part 6: Verification Checklist
 
 ### Compilation
-- [ ] `cd agent_api && mix deps.get` succeeds
-- [ ] `mix compile` - no warnings
-- [ ] `mix phx.routes` shows correct routes
+
+* [ ] `cd agent_api && mix deps.get` succeeds
+* [ ] `mix compile` - no warnings
+* [ ] `mix phx.routes` shows correct routes
 
 ### Runtime
-- [ ] `iex -S mix phx.server` starts on port 4000
-- [ ] AgentSupervisor starts (from agent_framework)
-- [ ] No errors in console
+
+* [ ] `iex -S mix phx.server` starts on port 4000
+* [ ] AgentSupervisor starts (from agent_framework)
+* [ ] No errors in console
 
 ### Agent Card Endpoint
-- [ ] `GET /.well-known/agent.json` returns 200
-- [ ] Response has: name, version, url
-- [ ] Response has: capabilities (streaming, pushNotifications)
-- [ ] Response has: skills array with id, name, description, inputSchema
+
+* [ ] `GET /.well-known/agent.json` returns 200
+* [ ] Response has: name, version, url
+* [ ] Response has: capabilities (streaming, pushNotifications)
+* [ ] Response has: skills array with id, name, description, inputSchema
 
 ### A2A JSON-RPC Endpoint
-- [ ] `POST /a2a` with ListAgents works
-- [ ] `POST /a2a` with StartAgent creates agent
-- [ ] `POST /a2a` with SendMessage queues task
-- [ ] `POST /a2a` with GetAgentState shows inbox_count
-- [ ] `POST /a2a` with ProcessNext returns result
-- [ ] Invalid JSON-RPC returns error code -32600
-- [ ] Unknown method returns error code -32601
-- [ ] Agent not found returns error code -32001
+
+* [ ] `POST /a2a` with ListAgents works
+* [ ] `POST /a2a` with StartAgent creates agent
+* [ ] `POST /a2a` with SendMessage queues task
+* [ ] `POST /a2a` with GetAgentState shows inbox_count
+* [ ] `POST /a2a` with ProcessNext returns result
+* [ ] Invalid JSON-RPC returns error code -32600
+* [ ] Unknown method returns error code -32601
+* [ ] Agent not found returns error code -32001
 
 ### Tests
-- [ ] `mix test` passes all tests
+
+* [ ] `mix test` passes all tests
 
 ---
 
@@ -505,6 +525,7 @@ TaskManager.list_agents()
 ```
 
 Solution: Ensure agent_framework compiles first:
+
 ```bash
 cd ../agent_framework && mix compile
 cd ../agent_api && mix deps.get
@@ -526,6 +547,7 @@ Check `mix.exs` has `mod: {AgentFramework.Application, []}`.
 ```
 
 Solution: Kill the existing process or use a different port:
+
 ```bash
 lsof -i :4000 | grep LISTEN | awk '{print $2}' | xargs kill
 # or
@@ -539,6 +561,7 @@ PORT=4001 mix phx.server
 ```
 
 Solution: Ensure Content-Type header is set:
+
 ```bash
 curl -H "Content-Type: application/json" ...
 ```

@@ -84,6 +84,7 @@ Different:
 ### Controller Actions
 
 Controller actions are functions that:
+
 1. Receive `conn` (the connection) and `params` (parsed request data)
 2. Process the request
 3. Return a response via the modified `conn`
